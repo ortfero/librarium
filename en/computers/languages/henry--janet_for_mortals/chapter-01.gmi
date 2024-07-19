@@ -1,0 +1,448 @@
+# Janet for Mortals
+
+## Chapter One: Values and References
+
+Alright, let’s get this over with.
+
+```
+(print "hello world")
+```
+
+Janet has parentheses. Okay? That’s all I’m going to say about it. There are some parentheses here. Maybe more than you’re used to. Maybe more than you’re comfortable with. I’m not going to try to convince you that parentheses are somehow morally superior to curly braces, or waste your time claiming that really it’s the same number of parentheses and they’re just shifted over a little. In fact I’m going to try to talk as little as possible about the parentheses, because they just aren’t very interesting at this stage. They’ll get interesting, once we start talking about macros, but right now the conversation can’t really progress beyond “Ew, I don’t like them.” I know you don’t. And if you can’t get past that, that’s fine. If you draw the line at parentheses, this book comes with a full money-back guarantee.
+
+I didn’t really even want to bring up the parentheses, but I thought it would be weird if I just blew past them. Like, we’re all thinking about them, right? And now you’re just wondering when I’m going to use the L-word. You want me to use it so you can go write a long screed about how Janet isn’t a real one. But I’m not going to give you the satisfaction. I’m not going to use that word until Chapter Fourteen. By which point you’ll be far too tired of all these long-winded tangents to remember what you were upset about in the first place.
+
+What were we talking about? Oh yeah, hello world.
+
+```
+(print "hello world")
+```
+
+As much as I’d like to belabor the very idea of “prefix notation” and talk about function application and special forms and whatnot, we’re already running behind so I’m going to have to skip ahead a little bit.
+
+```
+(defmacro each-reverse [identifier list & body]
+  (with-syms [$list $i]
+    ~(let [,$list ,list]
+      (var ,$i (- (,length ,$list) 1))
+      (while (>= ,$i 0)
+        (def ,identifier (in ,$list ,$i))
+        ,;body
+        (-- ,$i)))))
+
+(defn rewrite-verbose-assignments [tagged-lines]
+  (def result @[])
+  (var make-verbose false)
+  (each-reverse line tagged-lines
+    (match line
+      [:assignment identifier contents]
+        (if make-verbose
+          (array/push result [:verbose-assignment identifier contents])
+          (array/push result [:assignment contents]))
+      (array/push result line))
+    (match line
+      [:output _] (set make-verbose true)
+      _ (set make-verbose false)))
+  (reverse! result)
+  result)
+```
+
+Okay great. I think that’s a totally reasonable second code sample ever for you to look at.
+
+Just take it in for a moment; don’t worry too much about what it’s doing. Try to notice a few things at a high level:
+
+* There’s just a nightmare explosion of punctuation right at the beginning there.
+
+  Yeah, there is. There just is. It’s not pretty: commas at the *beginning* of words, one random stray semicolon, dollar signs running rampant. I’m not going to explain or defend this yet except to say that I think the glyphs are actually pretty well-chosen once you know what they mean.
+
+  This isn’t the sort of code you write *often*, but it is code that you write *sometimes*, and I specifically picked this example because I don’t want to shield you from macros like they’re some kind of impossible ivory tower construct that mere mortals cannot hope to grasp. They’re fine. They’re ugly, but they’re fine.
+
+* There are a lot of parentheses, but there are also a lot of square brackets.
+
+  Janet’s syntax was heavily inspired by Clojure, which not only uses square brackets, but also *curly braces*. The syntactic extravagance!
+
+* There are two different ways to declare local variables: `def` and `var`.
+
+  `def` and `var` are just like JavaScript’s `const` and `let`. var introduces a “variable” which can be re-assigned with `set`, and `def` introduces a “binding” which… can’t. If you re-`def` an identifier, you actually shadow that binding.
+
+* `array/push` looks like some kind of namespace.
+
+  In JavaScript, `(array/push list "item")` would just be `list.push("item")`, and the “namespace” would be the object’s prototype looked up at runtime.
+
+  Janet *does* support a similar style of object-oriented programming, but it uses it much more sparingly than JavaScript — generally only when you want some kind of runtime polymorphism. Instead, related functions are grouped into modules, and functions are usually brought into scope with this `module/function` convention.
+
+* We defined our own control structure.
+
+  In Janet you write a for-each loop like `(each item list (print item))`. Here we defined `each-reverse`, which behaves in exactly the same way, but iterates from the back of the list to the front.
+
+  In JavaScript you usually simulate new control structures by passing around first-class functions, like `list.forEachReverse(x => ...)`. There’s nothing wrong with this, and you could write the same thing in Janet, but the fact that you *can* define new control structures is one of the things that sets Janet apart from most other scripting languages, so I wanted to show it off here.
+
+* We defined a function with no explicit `return`.
+
+  Janet is an “expression-oriented” language, like Ruby or Haskell or Rust, not a “statement-oriented” language like JavaScript or C or Python.
+
+There’s more we could say about this example — we could try to figure out what the heck it’s supposed to be doing, for instance — but it’s going to be hard to talk about things before we establish a baseline.
+
+Which brings us back, finally, to the point of this chapter. The values of Janet, the nouns of Janet, the *things* that comprise a Janet program — the primitive data types and the built-in collections that we will wield to create our programs. And once we have that foundation, we can spend the rest of the book talking about Janet’s verbs.
+
+So here’s what we’re working with:
+
+numbers
+
+```
+repl:1:> 123
+123
+repl:2:> 1e6
+1000000
+repl:3:> 1_000
+1000
+repl:4:> -0x10
+-16
+repl:5:> 10.5
+10.5
+```
+
+Like JavaScript, all numbers in Janet are 64-bit IEEE-754 double-precision floats. Janet doesn’t have a “numerical tower.”
+
+=> https://en.wikipedia.org/wiki/Numerical_tower numerical tower
+
+booleans
+
+```
+repl:1:> true
+true
+repl:2:> false
+false
+repl:3:> maybe
+just kidding
+```
+
+Like JavaScript, Janet has a concept of “falsiness.” But while JavaScript’s falsiness rules are a common source of wats, Janet’s rules are much simpler: `false` and `nil` are falsy; everything else is truthy.
+
+=> https://www.destroyallsoftware.com/talks/wat wats
+
+```
+repl:1:> (truthy? 0)
+true
+repl:2:> (truthy? [])
+true
+repl:3:> (truthy? "")
+true
+repl:4:> (truthy? nil)
+false
+repl:5:> (truthy? false)
+false
+```
+
+nil
+
+```
+repl:1:> nil
+nil
+```
+
+`nil` is Janet’s version of JavaScript’s undefined. It’s the thing that functions return if they don’t return anything else; it’s the value that you get when you look up a key that doesn’t exist.
+
+Janet does not have an equivalent of JavaScript’s `null` — there is no special value of type object that is not actually an object in any meaningful sense of the word. `nil`, like `undefined`, is its own type.
+
+Note that Janet’s `nil` is not the empty list. If you don’t understand why I’m calling that out here, you can safely ignore this paragraph.
+
+strings
+
+```
+repl:1:> "hello"
+"hello"
+repl:2:> `"backticks"`
+"\"backticks\""
+repl:3:> ``"many`backticks"``
+"\"many`backticks\""
+```
+
+Strings come in two flavors: mutable and immutable. Mutable strings are called “buffers” and start with @, while immutable strings are called “strings.”
+
+```
+repl:1:> @"this is a buffer"
+@"this is a buffer"
+```
+
+Janet strings are plain arrays of bytes. They are not encoding-aware, and there is no native Unicode support in the language for indexing or iterating over “characters.” There are some functions that interpret strings and buffers as ASCII-encoded characters, but they are appropriately named `string/ascii-upper` and `string/ascii-lower`.
+
+There are external libraries for decoding UTF-8, but not for any other character encoding that I am aware of. And as far as I know there is no full-service Unicode library in Janet — if you need to count the number of extended grapheme clusters in a string, you will have to write some bindings yourself.
+
+=> https://github.com/andrewchambers/janet-utf8 external libraries
+
+vectors
+
+```
+repl:1:> [1 "two" 3]
+(1 "two" 3)
+repl:2:> ["one" [2] "three"]
+("one" (2) "three")
+repl:3:> @[1 "two" 3]
+@[1 "two" 3]
+```
+
+Vectors come in two flavors: mutable and immutable. Mutable vectors are called “arrays” and start with `@`, while immutable vectors are called “tuples.” If you are used to other languages with tuples, don’t be fooled: Janet’s tuples do not behave like tuples in any other language. They are iterable, random access immutable vectors.
+
+Also, it’s worth noting that tuples are not *fancy* immutable vectors, like you might find in Clojure. If you want to append something to a tuple, you have to create an entirely new copy of it first. We’ll talk more about the differences between mutable and immutable values in a bit.
+
+tables
+
+```
+repl:1:> {:hello "world"}
+{:hello "world"}
+repl:2:> @{"hello" "world" :x 1 :a 2}
+@{"hello" "world" :a 2 :x 1}
+```
+
+Once again, mutable and immutable flavors. Mutable tables are called “tables” and start with an @, while immutable tables are called “structs.” Yeah, I know. Right there with you. Modifying a struct, like modifying a tuple, requires creating a shallow copy first.
+
+Tables are a lot like JavaScript objects, except the keys don’t have to be strings, newly created tables and structs don’t have a default “root class” prototype, and they cannot store `nil` as either keys *or* values.
+
+This makes some sense if you think of `nil` as the undefined value: there is no ambiguity between “key does not exist” and “key exists but its value is undefined.” We’ll talk more about this in Chapter Eight.
+
+keywords
+
+```
+repl:1:> :hello
+:hello
+repl:2:> (keyword "world")
+:world
+```
+
+Generally you use keywords as the keys or field names in structs and tables. They’re also handy whenever you need to pass around an immutable named literal, like a tag or an enum.
+
+JavaScript doesn’t really have an analog for keywords, although you might be familiar with the idea from Ruby, which calls them “symbols.” In JavaScript you just pass around short strings, which is functionally the same thing. The difference in Janet is that keywords are interned and strings are not.
+
+=> https://en.wikipedia.org/wiki/Interning_(computer_science) interned
+
+symbols
+
+```
+repl:1:> 'hello
+hello
+repl:2:> (symbol "hello")
+hello
+```
+
+Symbols are *physically* exactly the same as keywords. They share the same interning table; the only difference between a keyword and a symbol is their type.
+
+Logically, though, symbols don’t represent small constant strings like enums. Symbols represent *identifiers* in your program. You’ll use symbols a lot when you’re writing macros, and basically nowhere else. I mean, you *could* use them elsewhere, if you really wanted to, but it’s usually more convenient to stick with keywords.
+
+functions
+
+```
+repl:1:> (fn [x] (+ x 1))
+<function 0x600000A8C9E0>
+```
+
+Janet functions can be variadic, and support optional and named arguments. `fn` creates an anonymous function, but you can also use `defn` as a shorthand for `(def name (fn ...))`.
+
+```
+repl:1:> (defn sum [& args] (+ ;args))
+<function sum>
+repl:2:> (sum 1 2 3)
+6
+```
+
+`&` in a parameter list makes the function variadic, and `(+ ;args)` is how you call a function with a variable number of arguments — `;` is like JavaScript’s `...`. As you can see, the function called `+` is already variadic, so there’s no actual reason to write a variadic `sum` like this. But it’s just an example.
+
+```
+repl:1:> (defn incr [x &opt n] (default n 1) (+ x n))
+<function incr>
+repl:2:> (incr 10)
+11
+repl:3:> (incr 10 5)
+15
+```
+
+`&opt` makes all following arguments optional, and `&named` makes, well, named parameters:
+
+```
+repl:1:> (defn incr [x &named by] (+ x by))
+<function incr>
+repl:2:> (incr 10 :by 5)
+15
+```
+
+Note, however, that when we call a function, named arguments must come after any positional arguments.
+
+```
+repl:3:> (incr :by 5 10)
+error: could not find method :+ for :by, or :r+ for nil
+  in incr [repl] on line 10, column 26
+  in _thunk [repl] (tailcall) on line 12, column 1
+```
+
+Because `:by` is, after all, a valid argument to pass positionally.
+
+fibers
+
+```
+repl:1:> (fiber/new (fn [] (yield 0)))
+<fiber 0x600003C10150>
+```
+
+Fibers are powerful control flow primitives, and it’s hard to give a pithy definition for them. Janet uses fibers to implement exception handling, generators, dynamic variables, early return, `async`/`await`-style concurrency, and coroutines. Among other things.
+
+One very incomplete but perhaps useful intuition is that a fiber is a function that can be paused and resumed later. Except it’s not a function; it’s actually a full call stack. And it’s not always resumable: you can also stop them. Maybe this is just confusing. You know what? We’re going to spend an entire chapter talking about fibers together later. Maybe I shouldn’t try to explain them poorly before then.
+
+~~~
+
+Alright. We did it.
+
+Those are all the values in Janet.
+
+At least, I *think* those are all the values.
+
+I find it really comforting to have this bird’s eye survey of the Janet noun landscape, but it only really comforts me if I can see all the way to the shoreline. And so far all I’ve done is list out a bunch of types. Did I get all of them? Half of them? Or have I only just scratched the surface?
+
+Well, one nice thing about Janet is that it’s distributed as a single .h/.c file pair, so it’s very easy to look in the source to check. So let’s do that.
+
+We can download the latest amalgamated build from the Janet releases page, and grep for “type” until we find something plausible…
+
+=> https://github.com/janet-lang/janet/releases/ the Janet releases page
+
+```
+typedef enum JanetType {
+  JANET_NUMBER,    // [x]
+  JANET_NIL,       // [x]
+  JANET_BOOLEAN,   // [x]
+  JANET_FIBER,     // [x]
+  JANET_STRING,    // [x]
+  JANET_SYMBOL,    // [x]
+  JANET_KEYWORD,   // [x]
+  JANET_ARRAY,     // [x]
+  JANET_TUPLE,     // [x]
+  JANET_TABLE,     // [x]
+  JANET_STRUCT,    // [x]
+  JANET_BUFFER,    // [x]
+  JANET_FUNCTION,  // [x]
+  JANET_CFUNCTION, // [ ]
+  JANET_ABSTRACT,  // [ ]
+  JANET_POINTER    // [ ]
+} JanetType;
+```
+
+Okay. I did pretty good. `JANET_CFUNCTION` is *basically* an implementation detail; a `cfunction` looks and acts like a regular function in almost every respect, except that it’s implemented in C, not Janet.
+
+```
+repl:1:> (type pos?)
+:function
+repl:2:> (type int?)
+:cfunction
+```
+
+We’ll talk more about `cfunction`s in Chapter Nine.
+
+`JANET_POINTER` is useful for interacting with C programs; we’re not actually going to talk about it in this book but it’s exactly the thing that you think it is. `JANET_ABSTRACT` is pretty important, though, so we should probably talk about it now.
+
+A `JANET_ABSTRACT` type is a type implemented in C code that you can interact with like any other Janet value. We’ll learn how to write our own in Chapter Nine, and you’ll get a chance to see how flexible they are: you could implement *anything* as an abstract type, and in fact the Janet standard library does exactly that.
+
+This means that there are a few more types in the Janet standard library than the `JanetType` enum implies, and for the sake of completeness I will list them here:
+
+* `core/rng` (pseudorandom number generator)
+* `core/socket-address`
+* `core/process`
+* `core/parser` (specifically, the parser that Janet uses to parse Janet code)
+* `core/peg` (parsing expression grammar)
+* `core/stream` and `core/channel` (concurrent communication primitives)
+* `core/lock` and `core/rwlock` (multithreading stuff)
+* `core/ffi-signature`, `core/ffi-struct`, and `core/ffi-native`, which are parts of an experimental new FFI module that this book will not talk about
+* `core/s64` and `core/u64` (boxed 64-bit integer types)
+
+And *those* are all of the types that Janet gives you.
+
+I mean, for one definition of “type”. There are some instances of “struct with a particular documented shape” in the standard library, and you could call those distinct types if you wanted to. But you have now seen every type that exists at a physical, mechanical level. You’ve seen all the building blocks; everything else is just a permutation of these values.
+
+We’ll talk more about how these types work and what we can do with them in future chapters. But there is one thing that is so important and so primitive that we’re going to talk about it right now: *equality*.
+
+Janet, unlike *some* languages, does not have separate `eq` and `eql` and `equal` and `equalp` functions. Nor does it have `==` and `===` and `Object.is`. Janet has one real notion of equality: `=`.
+
+```
+repl:1:> (= (+ 1 1) 2)
+true
+```
+
+But `=` means something different depending on whether you’re asking about a *mutable* value, like a table or an array, or an *immutable* value, like a number or a keyword or a tuple.
+
+```
++--------------------+---------------------+-----------------+
+| data type          | immutable           | mutable         |
++--------------------+---------------------+-----------------+
+| atom               | number, keyword, symbol, nil, boolean |
+| closure            |                     | function        |
+| coroutine          |                     | fiber           |
+| byte array         | string              | buffer          |
+| random-access list | tuple               | array           |
+| hash table         | struct              | table           |
++--------------------+---------------------+-----------------+
+```
+
+Mutable values are only equal to themselves; you might say that they have “reference semantics:“
+
+```
+repl:1:> (= @[1 2 3] @[1 2 3])
+false
+repl:2:> (def x @[1 2 3])
+@[1 2 3]
+repl:3:> (= x x)
+true
+```
+
+While immutable values have “value semantics:“
+
+```
+repl:1:> (= [1 2 3] [1 2 3])
+true
+```
+
+This means that you can use immutable values as the keys of tables or structs without worrying about the specific instance you have a handle on:
+
+```
+repl:1:> (def corners {[0 0] :bottom-left [1 1] :top-right})
+{(0 0) :bottom-left (1 1) :top-right}
+repl:2:> (get corners [1 1])
+:top-right
+```
+
+While mutable keys must be the exact identical value:
+
+```
+repl:1:> (def zero-zero @[0 0])
+@[0 0]
+repl:2:> (def corners {zero-zero :bottom-left @[1 1] :top-right})
+{@[1 1] :top-right @[0 0] :bottom-left}
+repl:3:> (get corners @[0 0])
+nil
+repl:4:> (get corners zero-zero)
+:bottom-left
+```
+
+Janet *also* has a function called `deep=`, which performs a “structural equality” check for reference types, as well as a function called `compare=`, which can invoke a custom equality method. But these are not “real” equality functions, in the sense that Janet’s built-in associative data structures — structs and tables — only ever use `=` equality.
+
+But you can use `deep=` to compare two mutable values in your own code:
+
+```
+repl:1:> (deep= @[1 @"two" @{:three 3}] @[1 @"two" @{:three 3}])
+true
+```
+
+Although it’s worth noting that values of different types are never deep-equal to one another, even if their elements are identical:
+
+```
+repl:1:> (= [1 2 3] @[1 2 3])
+false
+repl:2:> (deep= [1 2 3] @[1 2 3])
+false
+```
+
+Abstract types can go either way — abstract type just means “implemented in C code,” and it’s possible to implement value-style or reference-style abstract types in C code. We’ll talk about how to do that in Chapter Nine.
+
+Finally, I think that it’s worth saying again: Janet’s immutable values are *simple* immutable values. They are not *fancy* immutable values like you might find in a language like Clojure. There is no structural sharing here; if you want to append an element to an immutable tuple you have to make a full copy first.
+
+That doesn’t mean that you shouldn’t append things to tuples! But it does mean that you should be aware of the trade-off, and probably prefer mutable structures if you’re working with large amounts of data.
+
+Internally, though, immutable types are still passed by reference. When you return an immutable struct from a function, you’re actually returning a *pointer* to an immutable struct — you don’t have to make copies of them to pass them around “on the stack.”
+
+=> chapter-02.gmi Chapter Two: Compilation and Imagination →

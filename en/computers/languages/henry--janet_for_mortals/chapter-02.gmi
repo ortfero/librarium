@@ -1,0 +1,340 @@
+# Janet for Mortals
+
+## Chapter Two: Compilation and Imagination
+
+Alright, we got the basics out of the way. Now we can get to the good stuff.
+
+In this chapter we’re going to talk about compile-time programming and images. JavaScript has no analog for images, nor does it have any sort of “compilation” step, but I’m sure you’re familiar with the concept. Er, the concept of compilation, that is. I hope you’re not already familiar with images, because I want to be the first to tell you about them.
+
+But in order to understand images, we first have to understand the life cycle of a Janet program. A Janet program like this one:
+
+example.janet
+
+```
+(def one 1)
+(def two 2)
+(def three (+ one two))
+
+(print one)
+
+(defn main [&]
+  (print three))
+
+(print two)
+```
+
+The `[&]` after `main` means that this function can take any number of arguments and just ignores them. When we run the script, Janet will pass all command-line arguments to this `main` function, and we could get an arity mismatch if our `main` function isn’t variadic like this.
+
+If you copy that into a file and run it through the Janet interpreter, you will see the following output:
+
+```
+janet example.janet
+1
+2
+3
+```
+
+Hopefully nothing too surprising. It ran through the top-level statements, then went back and executed our `main` function.
+
+But you can also *compile* Janet programs. Usually this means compiling them all the way down to native code using a tool called `jpm`, which is Janet’s version of `npm` or `cargo` or whatever. But in order to produce native code, `jpm` actually:
+
+* Compiles your Janet source code into an “image.”
+* Embeds the contents of that image into a `.c` file that also links in the Janet runtime and interpreter.
+* Compiles that `.c` file using your system’s C compiler.
+
+But I don’t want to talk about `jpm` yet, and Janet can only natively do the first thing, so we’re going to be producing and running these “images” directly. We’ll talk about how to get a native binary in Chapter Seven.
+
+So what *is* an image? Well, it’s easier if I just show you. Let’s make one:
+
+```
+janet -c example.janet example.jimage
+1
+2
+```
+
+Whoa, look! It executed our top-level statements, but it didn’t call our `main`. It also produced a file called `example.jimage`, which we can pass back to Janet to run:
+
+```
+janet -i example.jimage
+3
+```
+
+Hey! There’s our `main` function. And it’s *just* our `main` function — the top-level `print` statements didn’t run again. But it still knew how to print `3`, which was a value that we calculated in a top-level statement. Huh.
+
+So top-level statements execute at “compile time”… but we can still refer to compile time values at “runtime.” Neat.
+
+Does that work for *any* values? Let’s try something more complicated, with mutable structures and shared references:
+
+```
+(def skadi @{:name "Skadi" :type "German Shepherd"})
+(def odin @{:name "Odin" :type "German Shepherd"})
+
+(def people
+  [{:name "ian" :dogs [skadi odin]}
+   {:name "kelsey" :dogs [skadi odin]}
+   {:name "jeffrey" :dogs []}])
+
+(pp people)
+
+(defn main [&]
+  (set (odin :type)
+    "Well mostly German Shepherd but he's mixed with some collie so his ears are half-flops")
+  (pp people))
+```
+
+`pp` is supposed to stand for “pretty print,” although it doesn’t really, so I’ll be manually reformatting the output a bit. If we compile this program, we’ll see how this list looked during compilation:
+
+```
+janet -c dogs.janet dogs.jimage
+({:dogs (@{:name "Skadi" :type "German Shepherd"}
+         @{:name "Odin" :type "German Shepherd"})
+  :name "ian"}
+ {:dogs (@{:name "Skadi" :type "German Shepherd"}
+         @{:name "Odin" :type "German Shepherd"})
+  :name "kelsey"}
+ {:dogs () :name "jeffrey"})
+```
+
+And then if we run it, we can see how it looks after we mutate Odin:
+
+```
+janet -i dogs.jimage
+({:dogs (@{:name "Skadi" :type "German Shepherd"}
+         @{:name "Odin" :type "Well mostly German Shepherd but he's mixed with some collie so his ears are half-flops"})
+  :name "ian"}
+ {:dogs (@{:name "Skadi" :type "German Shepherd"}
+         @{:name "Odin" :type "Well mostly German Shepherd but he's mixed with some collie so his ears are half-flops"})
+  :name "kelsey"}
+ {:dogs () :name "jeffrey"})
+```
+
+So let’s notice a few things about this:
+
+1. When you print tuples, they’re wrapped in parentheses, even though you define them with square brackets and they should print with square brackets.
+
+  whatever i’m over it
+
+2. Tables and structs do not preserve the order of their keys.
+
+3. *References* are preserved between compile time and runtime.
+
+I wanted to point that last one out explicitly, because you can imagine a dumber version of this where that is *not* the case. Like, if you’re JavaScript, and you wanted to allow programs to refer to values created at compile time, one natural way to do that would be serialize those values into JSON and then read them back at program startup.
+
+But Janet is doing something fancier than that. Janet *is* still serializing values to disk and reading them back, but the format it uses is able to express things like shared references and cyclic data structures and closures and the current state of a coroutine.
+
+Janet calls this fancy serialization “marshaling,” as do many other languages, except for Python, which calls it “pickling.” This fact is not really relevant to this book at all; I just think “pickling” is a really whimsical term.
+
+So let’s think about how this might work.
+
+Perhaps when we compile a Janet program, we’re actually doing two things: there’s the “normal” compilation step, where we take high-level Janet code and turn it into lower-level bytecode that the Janet interpreter knows how to execute, just like a normal bytecode compiler. But then there’s also this second step, where we take the values that we computed at compile-time (*which* values?) and marshal them into bytes. And then an image is the combination of those two things. Is that right?
+
+Well, no. Not really. Because these two steps are not actually separate: an image isn’t a “data” part plus a “code” part. It’s *just* a data part. As a matter of fact, the entire image consists of nothing more than a single marshaled value: our program’s *environment*.
+
+”Environment” is a fancy word for scope, but in Janet it refers specifically to the top-level scope. It’s the table mapping symbols (like `skadi` and `main`) to values that we `def`ined for them. And it is, itself, a first-class value! It is literally a Janet `@{...}` table, and it is the “root” value that Janet serializes to form our image.
+
+But some of the values in that environment table are *functions*. And of course functions are first-class values in Janet, so when we marshal the table we have to marshal those functions as well.
+
+And how do you marshal a function? Well, you’ve probably guessed it already: as bytecode that represents the function’s implementation.
+
+So an “image” is a serialized environment table that *probably* includes a key called `main` whose value is a function. And when we “resume” or “execute” the image with `janet -i`, Janet will first deserialize this environment, then look up the symbol called `main`, and then execute that function.
+
+Let’s make this a little more concrete. Show me the image:
+
+```
+repl:1:> (load-image (slurp "dogs.jimage"))
+@{main @{:doc "(main)\n\n" :source-map ("dogs.janet" 11 1) :value <function main>} odin @{:source-map ("dogs.janet" 1 1) :value @{:name "Odin" :type "German Shepherd"}} people @{:source-map ("dogs.janet" 4 1) :value ({:dogs (@{:name "Skadi" :type "German Shepherd"} @{:name "Odin" :type "German Shepherd"}) :name "ian"} {:dogs (@{:name "Skadi" :type "German Shepherd"} @{:name "Odin" :type "German Shepherd"}) :name "kelsey"} {:dogs () :name "jeffrey"})} skadi @{:source-map ("dogs.janet" 2 1) :value @{:name "Skadi" :type "German Shepherd"}} :current-file "dogs.janet" :macro-lints @[] :source "dogs.janet"}
+```
+
+`slurp` is a function that returns the contents of a file as a string, and `spit` is a function that writes a string to a file. I think these names come from Clojure, and I hate them.
+
+Alright, well, that’s a complete mess, so let me pretty-print it for you:
+
+```
+@{main @{:doc "(main)\n\n"
+         :source-map ("dogs.janet" 11 1)
+         :value <function main>}
+  odin @{:source-map ("dogs.janet" 1 1)
+         :value @{:name "Odin" :type "German Shepherd"}}
+  people @{:source-map ("dogs.janet" 4 1)
+           :value ({:dogs (@{:name "Skadi" :type "German Shepherd"} @{:name "Odin" :type "German Shepherd"}) :name "ian"}
+                   {:dogs (@{:name "Skadi" :type "German Shepherd"} @{:name "Odin" :type "German Shepherd"}) :name "kelsey"}
+                   {:dogs () :name "jeffrey"})}
+  skadi @{:source-map ("dogs.janet" 2 1) :value @{:name "Skadi" :type "German Shepherd"}}
+  :current-file "dogs.janet"
+  :macro-lints @[]
+  :source "dogs.janet"}
+```
+
+You can see that there’s a little bit more to the table than I let on — Janet stores some metadata about each binding, as well as some metadata about the environment itself.
+
+But still, you can see that an image is just a snapshot of your program’s environment, frozen in time. And, in theory, you could take a snapshot of your program’s environment at *any* point in time…
+
+```
+repl:1:> (def greeting "hello world")
+"hello world"
+repl:2:> (defn main [&] (print greeting))
+<function main>
+repl:3:> (def image (make-image (curenv)))
+@"\xD4\x05\xD8\x08root-env\xCF\x01_\xD3\x01\xD0\x05value\xD7\0\xCD\0\x98\0\0\x02\0\0\xCD\x7F\xFF\xFF\xFF\x02\x05\xCE\x04main\xCE\x04repl\xCE\vhello world\xD8\x05print,\0\0\0*\x01\0\0/\x01\0\0*\x01\x01\04\x01\0\0\x02\x01\0\x10\0\x10\0\x10\0\x10\xCF\x05image\xD3\x01\xD0\nsource-map\xD2\x03\0\xDA\x07\x03\x01\xCF\x08greeting\xD3\x02\xDA\f\xD2\x03\0\xDA\x07\x01\x01\xDA\x04\xDA\x08\xCF\x04main\xD3\x03\xDA\f\xD2\x03\0\xDA\x07\x02\x01\xDA\x04\xDA\x05\xD0\x03doc\xCE\n(main &)\n\n\xD8\r*macro-lints*\xD1\0"
+repl:4:> (spit "repl.jimage" image)
+nil
+
+janet -i repl.jimage
+hello world
+```
+
+Which is neat, I guess, and as I understand it this is actually the canonical way to write programs in some languages: you load an image, interactively modify it, then save the image back to disk.
+
+This is *possible* in Janet, and maybe even *fun* and *good*, but I’m not going to say anything else about it. This is a style of programming that dates back to long before I was born, but I have never tried it so I don’t know what I’m missing and I’m going to dismiss it out of hand.
+
+Instead I’m going to talk about images as if they are nothing more than the output of Janet’s “compilation” phase. Because even if you limit yourself to a strict compilation/runtime separation, you can still use compile-time code execution to do a lot of very powerful things.
+
+In fact, I think “compilation” is selling Janet short a little bit. When I hear “compilation,” I think of a transformation from high-level code to lower-level code, probably with some optimization thrown in along the way. And that is *part* of what Janet does during the so-called compilation phase, but it can also do *anything else*! It can execute arbitrary code, perform complex calculations — even perform side effects! — and once it’s done it will give us not just bytecode, but a fully interwoven image of our environment.
+
+So instead of the “compilation phase,” I’m going to propose we call this the *imagination phase*.
+
+Okay, I hate it already. Proposal rescinded. Segue out of this one with me.
+
+So far we’ve only looked at really contrived, artificial examples. I think it’s time to talk about something real.
+
+OpenGL has a concept called “shaders,” which are little mini-programs that run on the GPU and do things like calculate the color for each pixel of your teapot or whatever.
+
+You can’t compile these mini-programs ahead of time, because every GPU is a little bit different, so if you’re writing a game that uses OpenGL, you actually need to distribute the source of your shaders as part of your game, and let each of your players’ video drivers compile them on startup.
+
+So there are lots of ways to do this: we could just distribute the shaders as separate files alongside the game and load them in at runtime relative to the path of our executable. And that would work fine!
+
+But let’s say that we don’t want to do that. Let’s say we want to distribute a game as a single binary.
+
+Well, we could just embed the shader source as a string in our code:
+
+```
+(def gamma-shader `
+  #version 330
+
+  in vec3 fragColor;
+  out vec4 outColor;
+
+  void main() {
+    outColor = vec4(pow(fragColor, vec3(1.0 / 2.2)), 1.0);
+  }`)
+```
+
+But that’s obviously terrible; we probably wouldn’t have any tooling support if we did that, and it would be pretty annoying to locate and change our shaders once we have more than a couple of them.
+
+Instead, what if we kept the shaders in separate files, but loaded them into the program at *compile time*?
+
+shader-example.janet
+
+```
+(def gamma-shader (slurp "gamma.fs"))
+
+(defn main [&]
+  (print gamma-shader))
+```
+
+Neat! Now if we compile that to an image, we can embed the data into our final executable:
+
+```
+janet -c shader-example.janet shader-example.jimage
+
+rm gamma.fs # no longer needed!
+
+janet -i shader-example.jimage
+#version 330
+
+in vec3 fragColor;
+out vec4 outColor;
+
+void main() {
+  outColor = vec4(pow(fragColor, vec3(1.0 / 2.2)), 1.0);
+}
+```
+
+Okay cool. We performed the side effect of reading from the disk at compile time, and then… well, nothing else. We just referred to it like a regular value, and Janet’s image marshaling took care of embedding the data into our final binary.
+
+Now, obviously there are limits to what you can marshal: not all values can survive cryostasis. In fact, if we consider a slight variation of that code:
+
+shader-example2.janet
+
+```
+(def f (file/open "gamma.fs"))
+(def gamma-shader (file/read f :all))
+(file/close f)
+
+(defn main [&]
+  (print gamma-shader))
+```
+
+This is functionally identical, and we can still *run* this script just fine:
+
+```
+janet shader-example2.janet
+#version 330
+
+in vec3 fragColor;
+out vec4 outColor;
+
+void main() {
+  outColor = vec4(pow(fragColor, vec3(1.0 / 2.2)), 1.0);
+}
+```
+
+But if we try to compile it…
+
+```
+janet -c shader-example2.janet shader-example2.jimage
+error: cannot marshal file in safe mode
+  in marshal [src/core/marsh.c] on line 1480
+  in make-image [boot.janet] on line 2637, column 3
+  in c-switch [boot.janet] (tailcall) on line 3873, column 36
+  in cli-main [boot.janet] on line 3909, column 13
+```
+
+We can’t. We now have a reference to a `core/file` abstract type in our top-level environment, and when Janet tries to marshal the environment it throws its hands up on that value. Because of course it does: you can’t serialize a file handle or a network connection or anything like that to disk.
+
+I think we can notice three things from this:
+
+* The *entire* environment is marshaled into our image.
+
+  We don’t reference `f` in our `main` function, so you could imagine Janet doing some kind of sophisticated tree-shaking to determine that this value is unreachable and not needed in the final executable (even though, in a language as dynamic as Janet, this sort of optimization is basically impossible).
+
+  But this would go against the spirit of what an image *is*. The image *is* the environment, the whole environment, and you can load and interact with it in more ways than just running its `main` function. Even though we probably won’t.
+
+  Note that most scopes in Janet are *not* first-class objects, so Janet is free to do things to optimize their representation and you won’t even be able to tell. But the outer scope — the *environment* — is special.
+
+* Janet doesn’t special-case closed file handles.
+
+  You could imagine a world where Janet lets us get away with this *just this once*, since unmarshaling a closed file handle could be well-defined. But also useless.
+
+* There exist programs that Janet knows how to execute but which cannot be compiled into images.
+
+In practice you don’t really have to think about this, like, ever.
+
+I actually had to contort a bit to write this “broken” program. The correct way to read from a file, if you are allergic to typing the word `slurp`, would be:
+
+```
+(def gamma-shader
+  (with [f (file/open "gamma.fs")]
+    (file/read f :all)))
+
+(defn main [&]
+  (print gamma-shader))
+```
+
+Which of course compiles fine — `f` is not a top-level variable, so it’s not a part of the environment.
+
+And when you’re writing little shebang scripts, you probably won’t even define a `main` function, and it will look like Janet just runs through your script in order like any other scripting language. All of your work will take place during the “compilation” phase, and Janet will never try to construct an image at all, and you *really* won’t have to think about this.
+
+But once you start writing larger programs that you compile ahead of time, you can start to think about the distinction, and decide if there’s any work you want to perform ahead-of-time. You don’t have to — you can put everything in `main` if you want to — but you have that power should you need it.
+
+Finally, I think it’s worth pointing out explicitly: just because we can’t marshal `core/files`, that doesn’t mean we can’t marshal *other* abstract types. Many of the abstract types in the standard library (like `core/peg`) are perfectly marshalable, and when we define our own abstract types we can optionally provide custom marshaling routines. We’ll talk more about that in Chapter Nine.
+
+And now I’m done talking about images.
+
+You got a little taste of what you can do with compile-time programming, and I hope that it was to your liking. Because the next chapter…
+
+Well, I don’t want to spoil it.
+
+=> chapter-03.gmi Chapter Three: Macros and Metaprogramming →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.

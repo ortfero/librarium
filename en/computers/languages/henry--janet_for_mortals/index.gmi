@@ -1,0 +1,74 @@
+# Janet for Mortals (a real book)
+Ian Henry
+2023
+
+~~~
+This book was converted from the html version to gemtext in July 2024 by Andrei Il'in with the kind permission of Ian Henry. Feel free to contact me by ortfero at gmail dot com.
+
+=> https://janet.guide html version
+=> https://ianthehenry.com Ian Henry
+~~~
+
+Hello and thank you for coming to my book.
+
+I want to tell you about Janet, because I think that Janet is a very good language and it’s a shame that you haven’t heard of it yet. I like Janet so much that I wrote an entire book about it. Look:
+
+=> https://janet-lang.org/ Janet
+
+=> chapter-01.gmi Chapter One. Values and References 
+=> chapter-02.gmi Chapter Two. Compilation and Imagination
+=> chapter-03.gmi Chapter Three. Macros and Metaprogramming
+=> chapter-04.gmi Chapter Four. Pegular Expressions
+=> chapter-05.gmi Chapter Fibe. Concurrency and Coroutines
+=> chapter-06.gmi Chapter Six. Control Flow
+=> chapter-07.gmi Chapter Seven. Modules and Packages
+=> chapter-08.gmi Chapter Eight. Tables and Polymorphism
+=> chapter-09.gmi Chapter Nine. Xenofunctions 
+=> chapter-10.gmi Chapter Ten. Embedding Janet
+=> chapter-11.gmi Chapter Eleven. Testing and Debugging
+=> chapter-12.gmi Chapter Twelve. Scripting
+=> chapter-13.gmi Chapter Thirteen. Macro Mischief
+
+Wow! Look at all those chapters. Just like a real book.
+
+This isn’t one of those chapters yet, though. This is the before part. If this were a real book, which it is, this part might be labeled “Introduction.”
+
+
+## Introduction
+
+Oh, good.
+
+Janet occupies a really valuable niche: it is a small, simple language that is actually usable. It has an elegant simplicity that you might associate with someone’s hobby project, but you can actually run it on Windows. It has built-in concurrency and multithreading, and it is an excellent language for text-wrangling, thanks to the native support for parsing expression grammars (think better regular expressions). It has a simple C FFI, so the package ecosystem is “all of them,” as long as you’re willing to write a few lines of binding code first. And thanks to the lightweight runtime, it’s very easy to use Janet as an embedded scripting language.
+
+My favorite feature of Janet, though, is something that sounds really dumb when I say it out loud: you can actually distribute Janet programs to other people. You can compile Janet programs into statically-linked native binaries and give them to people who have never even heard of Janet before. And they can run them without having to install any gems or set up any virtual environments or download any runtimes or anything else like that.
+
+This means that if you want to use Janet for something, you can, and no one even needs to know.
+
+And to be clear, I’m not going to try to convince you to bet your next startup on Janet, or even to use it in any sort of production setting. But I think it’s an excellent language for exploratory programming, scripting, and fun side projects. I’ve personally used Janet in a few capacities:
+
+=> https://github.com/ianthehenry/privy dumb little texty scripts a little too complicated for shell
+=> https://ianthehenry.com/posts/janet-game/day-one/ dumb little games for weekend tinkering
+=> https://bauble.studio/ dumb interactive art playgrounds
+
+I have yet to do anything smart with it, though.
+
+
+### about this book
+
+This book assumes that you already know how to program; I’m not going to waste your time explaining what a for loop is. Specifically this book assumes that you already know how to program in JavaScript, because it’s better to have something concrete to diff against, and I’m willing to bet that even if it isn’t your first language, you know enough JavaScript to be able to follow along. And if you don’t, then, well, you’ll probably still be fine. All programming languages are basically the same.
+
+With that in mind I’m going to emphasize what makes Janet different early on. I’ll cover the whole language, but I’ll talk about macros and images and PEGs before I talk about, like, if statements. Is that a good way for a book to present information? I don’t know. We’re going to find out together.
+
+This book is also available as a single HTML page, or as a poorly-formatted epub.
+
+=> https://janet.guide/all/ as a single HTML page
+=> https://janet.guide/janet-for-mortals.epub as a poorly-formatted epub
+
+
+### about this author
+
+Oh that’s me.
+
+I’m just a fan of Janet; I am not affiliated with the language in any way. I have no real qualifications to be writing a book about it, and nothing that you read here should be considered authoritative, idiomatic, or educational.
+
+=> chapter-01.gmi Chapter One: Values and References

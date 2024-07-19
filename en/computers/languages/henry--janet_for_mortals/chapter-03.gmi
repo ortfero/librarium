@@ -1,0 +1,844 @@
+# Janet for Mortals
+
+## Chapter Three: Macros and Metaprogramming
+
+Oh; it’s just right there. Not a lot of time to build suspense, really. It kind of spoiled itself.
+
+Alright, well, yes, we’re going to talk about macros. We’re going to talk about macros *as if you have never heard of them*, even though you probably have, because remember that in this book you’re only supposed to know JavaScript and JavaScript doesn’t have any.
+
+And actually, we should probably talk about that. JavaScript doesn’t have macros. Most popular languages don’t have macros as a matter of fact. And you’ve made it this far in life using those languages, and you’re doing just fine. Do you really *need* macros?
+
+Well, no. There is no program that you can write with macros that you couldn’t write in some other way — just like there is no program that you can write with first-class functions that you couldn’t write some other way.
+
+But aren’t first-class functions *nice*? Think of all the things they let you do: `fold`, promises, event handlers— do you know what it’s like writing event handlers without first-class functions? Have you ever implemented a delegate class? It’s awful.
+
+=> https://developer.apple.com/documentation/uikit/uitableviewdelegate delegate class
+
+Macros are similarly useful. You can write macros to eliminate boilerplate to a degree that you cannot imagine in a language without them. You can write macros to define new control-flow constructs, like a `switch` with destructuring `case`s (don’t you wish JavaScript had that?). You can write macros that define new functions for you, or modify existing functions à la Python’s decorators. You can write macros that take high-level descriptions of binary formats and generate code to efficiently parse them. You can write macros to do all sorts of things.
+
+So: macros.
+
+Macros.
+
+I really am going to talk about macros, but you’ll have to give me a second, because first I want to talk about *metaprogramming*. Macros are a tool that we can use to write very powerful “metaprograms,” but we can do metaprogramming without any macros at all.
+
+In fact, in a way, all compiled Janet programs are “metaprograms” — programs that write other programs — because of the way that the compilation step works. When we “compile” a Janet program, we’re really *executing* (part of) it, performing all of the top-level effects, computing all of the top-level values, and then finally producing, as the output of this “metaprogram,” an image with a `main` function. And what is that image but a new program forged in the fires of our metaprogram?
+
+So here’s a macro-free metaprogram where this “program construction” is a little more explicit. It’s a script that you can compile to produce an image that prints `hello world`.
+
+meta.janet
+
+```
+(defn sequence [& fs]
+  (fn [&]
+    (each f fs
+      (f))))
+
+(defn first-word []
+  (prin "hello"))
+
+(defn space []
+  (prin " "))
+
+(defn second-word []
+  (prin "world"))
+
+(defn newline []
+  (print))
+
+(def main (sequence first-word space second-word newline))
+```
+
+`prin` is like `print`, but it doesn’t print the trailing newline, so the output will all show up on one line.
+
+Nothing mind-blowing, right? If you’re comfortable with the idea of functions returning other functions, you can see that we created an anonymous closure over our various smaller functions, then we created a binding called `main` in the environment that points to that closure. When Janet constructs the image, its `main` function will be exactly that closure that we dynamically allocated during the compilation phase.
+
+```
+janet -c meta.janet meta.jimage
+
+janet -i meta.jimage
+hello world
+```
+
+Metaprogramming.
+
+But that’s not really what *typical* metaprogramming looks like. That’s a weird high-level example that I made up to get you comfortable with the idea of creating new functions at compile-time.
+
+But there’s a much more direct way to create new functions at compile time. In fact, Janet has a function that takes in the *body* of a function as an abstract syntax tree and gives us back an actual real-live function that represents the result of evaluating that body. We can use that to directly create new functions:
+
+compile.janet
+
+```
+(def main (compile ['print "weird"]))
+```
+
+Remember that `'print` is a “symbol.” `['print "weird"]` is an immutable vector (“tuple”) of two elements: the symbol `'print` and a string. That tuple is how Janet represents the abstract syntax tree of the expression `(print "weird")`, and indeed if we compile and execute it, we can see that it does exactly that:
+
+```
+janet -c compile.janet compile.jimage
+
+janet -i compile.jimage
+weird
+```
+
+When we pass an abstract syntax tree to the `compile` function, Janet will give us back the function that ignores its arguments and has that abstract syntax tree as its body. And it works for any abstract syntax tree we construct:
+
+```
+repl:1:> (def f (compile ['+ 1 ['* 2 3]]))
+<function _thunk>
+repl:2:> (f)
+7
+```
+
+Because Janet uses a very lightweight representation for abstract syntax trees — they’re regular tuples of regular Janet values, like symbols and numbers and other tuples — it’s very easy for us to *manipulate* abstract syntax trees. We don’t need to use some special `AbstractSyntaxTreeNodeVisitor` class or something to wrangle these values; we can just use regular loops and maps and anything else that we could do with any other tuple.
+
+So let’s do that.
+
+```
+(defn set-x [& expressions]
+  (def result @['do])
+  (each expression expressions
+    (array/push result ['print (string/format "about to execute %q" expression)])
+    (array/push result expression))
+  (tuple/slice result))
+```
+
+We’re appending elements to a mutable vector (“array”), but we want to return a tuple, so we use `tuple/slice` to make an immutable copy.
+
+I called this `set-x` because it reminds me of bash’s `set -x` option. But it doesn’t change anything about how Janet works; it’s just a function that takes any number of abstract syntax trees and returns a *single* new abstract syntax tree.
+
+Since functions have to return a single value, we wrap everything in `do` to produce the abstract syntax tree that, well, does all of the things we want in order.
+
+Actually, let’s take a quick look at `do` before we move on:
+
+```
+(do
+  (first-thing)
+  (second-thing))
+```
+
+This is equivalent to creating a new block in JavaScript:
+
+```
+{
+  firstThing();
+  secondThing();
+}
+```
+
+In JavaScript you usually create a new block so that you can control the extent of block-scoped variables:
+
+```
+{
+  const x = 10;
+  console.log(x);
+}
+// x no longer exists
+```
+
+The same is true in Janet:
+
+```
+(do
+  (def x 10)
+  (print x))
+# x no longer exists
+```
+
+But this actually *isn’t* what we want here. We’re only using `do` because we want to pack a bunch of abstract syntax trees into a single abstract syntax tree. The fact that `do` creates a new scope is sort of incidental, and in fact might actually be problematic.
+
+Fortunately, Janet has a `do` alternative called `upscope`, and `upscope` does *not* create a new scope. It executes all of its expressions in the same scope that it runs in.
+
+```
+(upscope
+  (def x 10)
+  (print x))
+(print x) # still exists!
+```
+
+I think that’s actually more appropriate for our `set-x` function. So let’s switch to that:
+
+set-x.janet
+
+```
+(defn set-x [& expressions]
+  (def result @['upscope])
+  (each expression expressions
+    (array/push result ['print (string/format "about to execute %q" expression)])
+    (array/push result expression))
+  (tuple/slice result))
+```
+
+Okay. So this is a function; let’s call it:
+
+janet -l ./set-x
+
+```
+repl:1:> (set-x ['print ['string/ascii-upper "hello"]] ['+ ['* 3 2] ['/ 1 2]])
+(upscope (print "about to execute (print (string/ascii-upper \"hello\"))") (print (string/ascii-upper "hello")) (print "about to execute (+ (* 3 2) (/ 1 2))") (+ (* 3 2) (/ 1 2)))
+```
+
+`janet -l` tells Janet to load the provided library so that it’s in scope in the repl. We saved our function into a file called `set-x.janet`, but we import it as `./set-x`. If we just use `set-x`, Janet will look for a library with that *name* in the shared library path:
+
+```
+janet -l set-x
+error: could not find module set-x:
+    /usr/local/lib/janet/set-x.jimage
+    /usr/local/lib/janet/set-x.janet
+    /usr/local/lib/janet/set-x/init.janet
+    /usr/local/lib/janet/set-x.so
+  in require-1 [boot.janet] on line 2900, column 20
+  in import* [boot.janet] on line 2939, column 15
+  in l-switch [boot.janet] (tailcall) on line 3878, column 12
+  in cli-main [boot.janet] on line 3909, column 13
+```
+
+By making it look like a path with `./`, Janet looks for a local library instead. And we don’t specify the extension because a library can take many forms, as you can see from the error above, and having a uniform way to refer to libraries allows us to more easily change their physical representation later.
+
+Wow that was the longest aside ever. I forgot what we were even talking about.
+
+janet -l ./set-x
+
+```
+repl:1:> (set-x ['print ['string/ascii-upper "hello"]] ['+ ['* 3 2] ['/ 1 2]])
+(upscope (print "about to execute (print (string/ascii-upper \"hello\"))") (print (string/ascii-upper "hello")) (print "about to execute (+ (* 3 2) (/ 1 2))") (+ (* 3 2) (/ 1 2)))
+```
+
+Oh, that’s right. Let’s prettify that:
+
+```
+(upscope
+  (print "about to execute (print (string/ascii-upper \"hello\"))")
+  (print (string/ascii-upper "hello"))
+  (print "about to execute (+ (* 3 2) (/ 1 2))")
+  (+ (* 3 2) (/ 1 2)))
+```
+
+Alright! Remember that this is only an abstract syntax tree. We need to `compile` it if we actually want to execute the code:
+
+janet -l ./set-x
+
+```
+repl:1:> (set-x ['print ['string/ascii-upper "hello"]] ['+ ['* 3 2] ['/ 1 2]])
+(upscope (print "about to execute (print (string/ascii-upper \"hello\"))") (print (string/ascii-upper "hello")) (print "about to execute (+ (* 3 2) (/ 1 2))") (+ (* 3 2) (/ 1 2)))
+repl:2:> (compile _)
+<function _thunk>
+repl:3:> (_)
+about to execute (print (string/ascii-upper "hello"))
+HELLO
+about to execute (+ (* 3 2) (/ 1 2))
+6.5
+```
+
+In the repl, `_` refers to the result of the previous expression. So `(_)` invokes the anonymous `<function _thunk>` value that we compiled.
+
+Okay, cool. Metaprogramming.
+
+Except: *is it* cool? Or is it an unreadable mess, to the extent that you’re wondering why anyone would ever want to write code like this?
+
+Well, don’t worry: no one writes code like this. The thing we’re doing here is weird, and it’s especially weird if you’re already used to macros. You’re never actually going to see code like this; you’re probably never going to invoke the `compile` function directly. I’m just going through this so that you can see the things that Janet makes *possible*:
+
+* We can execute arbitrary code at compile time to create or manipulate abstract syntax trees.
+* We can turn those abstract syntax trees into real functions — still at compile time! — and stick them into our program’s image.
+* We can call those functions *at runtime* when we load the image back up.
+
+And these are the core ideas behind macros.
+
+But macros give us a much more *ergonomic* way to do all of these things. Macros are so ergonomic, in fact, that they verge into “magic” territory, and it’s easy to lose sight of the actual mechanisms underlying them. When I started writing macros I didn’t really understand how they worked, when they executed, or the full extent of what I could do with them. I thought of them as simple syntactic transformations, and it took a lot of playing with Janet before I understood their true potential.
+
+So we’re going to keep building towards macros. Right now we have a super explicit, super ugly version of something kinda like a macro. Let’s sprinkle syntax sugar on it until it tastes good.
+
+First off, no one ever writes abstract syntax trees like this:
+
+```
+['+ ['* 3 2] ['/ 1 2]]
+```
+
+Instead, you write this:
+
+```
+'(+ (* 3 2) (/ 1 2))
+```
+
+Which means exactly the same thing, but it *looks* much closer to the Janet code that it represents.
+
+`'` is pronounced “quote,” and whatever comes after the quote gets, umm, quoted. We’ve seen quote before with `'symbols`, and I pretended like it was just the way that you wrote symbol literals. But actually, quoting an identifier is just the most convenient way to get a symbol. You can also make them with the `(symbol "name")` constructor.
+
+You can quote anything, but quoting most things just gives you the thing you quoted back:
+
+```
+repl:1:> '100
+100
+repl:2:> '"hello"
+"hello"
+repl:3:> '{:key value}
+{:key value}
+repl:4:> '@[1 2 3]
+@[1 2 3]
+repl:5:> ':foo
+:foo
+repl:6:> 'true
+true
+repl:7:> 'nil
+nil
+```
+
+But when you quote something, it also quotes every sub-expression in it. So when we write `'{:key value}`, we get the “struct” `{':key 'value}`. Quoting a keyword gives us the keyword back, and quoting the identifier `value` gives us the *symbol* `'value` instead of treating it like the name of a variable, so we don’t get an error about `value` not being defined.
+
+So really `'(+ 1 2)` is the same as `['+ '1 '2]`, but since `'1` is the same as `1` we don’t bother to write that all out.
+
+Okay. So: does this help us? A little. Now we can write:
+
+```
+(set-x '(print (string/ascii-upper "hello")) '(+ (* 3 2) (/ 1 2)))
+```
+
+Which looks a tiny bit better, I guess. But does this help us with the implementation of `set-x`?
+
+```
+(defn set-x [& expressions]
+  (def result @['upscope])
+  (each expression expressions
+    (array/push result ['print (string/format "about to execute %q" expression)])
+    (array/push result expression))
+  (tuple/slice result))
+```
+
+Ummmm, no. Not really.
+
+We do construct the abstract syntax tree `['print (string/format "..." expression)]`, but we can’t write that as `'(print (string/format "..." expression))`. That would quote every element in the list, but we only want to quote the *first* element — we still want to evaluate the call to `string/format`.
+
+Fortunately, Janet has a way to quote *some* elements in an expression without quoting *every* element: replace `'` with `~`.
+
+`~` is pronounced “quasiquote.” It works exactly the same as `'`, except that you can “opt out” sub-expressions from getting quoted. By default it quotes everything, but you can tell it *not* to quote a specific term by prefixing it with a comma:
+
+```
+repl:1:> ~(print ,(+ 1 2))
+(print 3)
+```
+
+`,` is pronounced “unquote,” and it works, essentially, like string interpolation. Consider the following JavaScript:
+
+```
+node
+Welcome to Node.js v16.16.0.
+Type ".help" for more information.
+> `1 + 2 = ${1 + 2}`
+'1 + 2 = 3'
+```
+
+This is very similar to the following Janet expression:
+
+```
+repl:1:> ~(1 + 2 = ,(+ 1 2))
+(1 + 2 = 3)
+```
+
+Except it’s not a string; it’s a tuple. You can actually use this “tuple interpolation” to make any tuples you want; you don’t have to use it to make abstract syntax trees. But generally `[]` notation is more convenient: it’s usually better to make quoting opt-in instead of opt-out, *unless* you’re writing down an abstract syntax tree.
+
+Okay. So now we can write this instead:
+
+```
+(defn set-x [& expressions]
+  (def result @['upscope])
+  (each expression expressions
+    (array/push result ~(print ,(string/format "about to execute %q" expression)))
+    (array/push result expression))
+  (tuple/slice result))
+```
+
+Is that better? Eh; maybe a tiny bit. But not really.
+
+There’s one more bit of syntax sugar to add, though, and it’s going to help us substantially.
+
+Consider the following contrived example:
+
+```
+repl:1:> (def nums [1 2 3])
+(1 2 3)
+repl:2:> (def sum-ast ~(+ ,nums))
+(+ (1 2 3))
+```
+
+We interpolated a list into our list, and of course we got a nested list, because that’s what we asked for. But what if that’s not what we want? What if we want `(+ 1 2 3)` instead? Well, it turns out Janet has just the thing:
+
+```
+repl:3:> (def sum-ast ~(+ ,;nums))
+(+ 1 2 3)
+```
+
+`,;` is pronounced “unquote-splice,” and it splices each element in the inner list into the outer list.
+
+And that actually helps us a lot! That lets us completely rewrite `set-x`:
+
+```
+(defn set-x [& expressions]
+  ~(upscope
+    ,;(mapcat (fn [expression]
+        [~(print ,(string/format "about to execute %q" expression))
+         expression])
+        expressions)))
+```
+
+`mapcat` is Janet’s name for “concat map” — the function JavaScript calls `flatMap`. Unfortunately, the function argument comes first, so it’s very hard to read when you pass it an anonymous function like this.
+
+This is just a more functional version of the imperative thing we were doing before, using unquote-splice to form the list instead of explicit mutation.
+
+Now that’s starting to look like a real macro.
+
+Except, of course, it isn’t actually a macro yet. It’s just a function. A function that takes abstract syntax trees as input, and returns an abstract syntax tree as output. Which is *essentially* all that a macro is, except that we declare macros differently. We declare macros like this:
+
+set-x-macro.janet
+
+```
+(defmacro set-x [& expressions]
+  ~(upscope
+    ,;(mapcat (fn [expression]
+        [~(print ,(string/format "about to execute %q" expression))
+         expression])
+        expressions)))
+```
+
+This is exactly the same as before, but now we’re using `defmacro` instead of `defn`. And when we call it, we can see two interesting differences:
+
+janet -l ./set-x-macro
+
+```
+repl:1:> (set-x (print "hello") (+ 1 2))
+about to execute (print "hello")
+hello
+about to execute (+ 1 2)
+3
+```
+
+First off, notice that we don’t have to explicitly quote the arguments anymore. We just wrote `(print "hello")`, but our macro got `'(print "hello")` as one of its arguments.
+
+But that’s not very interesting. The interesting bit is that it didn’t just *return* the abstract syntax tree — it compiled and executed it as well.
+
+It executed it because we typed this into the repl, so this was sort of a confusing first example, as we combined both the compile time and runtime steps into one. So let’s take a look at how macros *normally* work:
+
+macro-example.janet
+
+```
+(use ./set-x-macro)
+
+(defn main [&]
+  (set-x
+    (var sum 0)
+    (for i 0 10
+      (+= sum i))
+    (print sum)))
+```
+
+It *looks* like we’re “calling” `set-x` in `main`. However, I’m going to claim that `set-x` will not run when we invoke `main`. Instead, `set-x` will run during the compilation phase, when we *compile* `main`, and the abstract syntax tree that `set-x` *returns* will run when we invoke `main`.
+
+Here, watch. Let’s compile this program:
+
+```
+janet -c macro-example.janet macro-example.jimage
+```
+
+Well… huh. Yeah. We can’t really tell. Maybe `set-x` ran; maybe nothing happened at all.
+
+Let’s make it a little more clear what’s going on.
+
+set-x-verbose.janet
+
+```
+(defmacro set-x [& expressions]
+  (print "expanding the set-x macro")
+  (printf "  here are my arguments: %q" expressions)
+  (def result ~(upscope
+    ,;(mapcat (fn [expression]
+        [~(print ,(string/format "about to execute %q" expression))
+         expression])
+        expressions)))
+  (printf "  and i'm going to return: %q" result)
+  result)
+```
+
+Let’s switch to that version of the macro, and add in a little self-reflection while we’re at it:
+
+macro-example-verbose.janet
+
+```
+(use ./set-x-verbose)
+
+(defn main [&]
+  (set-x
+    (var sum 0)
+    (for i 0 10
+      (+= sum i))
+    (print sum)))
+
+(print)
+(print "and this is what main looks like:")
+(print)
+(pp (disasm main))
+```
+
+Now when we compile *that* program, we can see it all in action:
+
+```
+janet -c macro-example-verbose.janet macro-example-verbose.jimage
+expanding the set-x macro
+  here are my arguments: ((var sum 0) (for i 0 10 (+= sum i)) (print sum))
+  and i'm going to return: (upscope (print "about to execute (var sum 0)") (var sum 0) (print "about to execute (for i 0 10 (+= sum i))") (for i 0 10 (+= sum i)) (print "about to execute (print sum)") (print sum))
+
+and this is what main looks like:
+
+{:arity 0 :bytecode @[ (lds 0) (ldc 1 0) (push 1) (ldc 2 1) (call 1 2) (ldi 1 0) (ldc 2 2) (push 2) (ldc 3 1) (call 2 3) (ldi 2 0) (ldi 3 10) (lt 4 2 3) (jmpno 4 5) (movn 5 2) (add 1 1 5) (addim 2 2 1) (jmp -5) (ldc 2 3) (push 2) (ldc 3 1) (call 2 3) (push 1) (ldc 2 1) (tcall 2)] :constants @["about to execute (var sum 0)" <cfunction print> "about to execute (for i 0 10 (+= sum i))" "about to execute (print sum)"] :defs @[] :environments @[] :max-arity 2147483647 :min-arity 0 :name "main" :slotcount 6 :source "macro-example-verbose.janet" :sourcemap @[ (3 1) (4 3) (4 3) (4 3) (4 3) (5 5) (4 3) (4 3) (4 3) (4 3) (6 5) (6 5) (6 5) (6 5) (6 5) (7 7) (6 5) (6 5) (4 3) (4 3) (4 3) (4 3) (8 5) (8 5) (8 5)] :structarg false :vararg false}
+```
+
+Don’t worry about actually understanding the bytecode for `main`, just take a look at the `constants` for strong evidence that the abstract syntax tree we returned actually did make its way in there somewhere.
+
+And indeed, when we run it, we can see that `main` does what we expect:
+
+```
+janet -i macro-example-verbose.jimage
+about to execute (var sum 0)
+about to execute (for i 0 10 (+= sum i))
+about to execute (print sum)
+45
+```
+
+Neat.
+
+So macros are like functions, but they always run at compile time *no matter where they appear in your program*. Here’s how it works:
+
+* Janet goes through each expression in your file in order from top to bottom.
+* Before it executes any expression — `defn` statements, top-level side effects, whatever — it first performs “macro expansion” on the abstract syntax tree of the expression. This means that Janet scans the abstract syntax tree for any previously-defined macros, and…
+* …for every macro that Janet finds, it invokes the macro’s underlying abstract-syntax-tree-manipulation-function, passing it all of its “arguments” as abstract syntax trees.
+* Janet then looks through the abstract syntax tree that that function returned, and checks if *it* has any macro invocations. If so, goto 3.
+* Once Janet reaches a fixed point where there are no more macros to expand, it replaces the macro invocations with their fully-expanded results, creating a new top-level abstract syntax tree.
+* Janet then `compile`s the top-level abstract syntax tree into a function.
+* And calls it.
+
+Alright.
+
+Macros.
+
+That’s macros.
+
+We did it.
+
+Except, gosh, we haven’t really done it at all, have we?
+
+We’ve only scratched the surface. We’ve only seen the absolute most boring, basic macro you could imagine.
+
+So let’s do something exciting, before we draw this chapter to a close.
+
+We’re going to write a macro that will read a SQLite schema file at compile time, then use that to generate functions that will query a corresponding SQLite database at runtime.
+
+Should you actually do this? No. This is veering so far into “magic” territory that I cannot in good conscience endorse anything like it. But I think it is a good demonstration of the power of metaprogramming, and it’ll be fun.
+
+Janet has a semi-first-party `sqlite3` package; we’re going to rely on that to do all of the heavy-lifting. I mean, to the extent that we’re lifting anything. It’s actually going to be pretty light.
+
+First off, we’ll need a schema. I’ll use something really simple for the sake of this example:
+
+```
+create table people(
+  id integer primary key,
+  name text not null
+);
+
+create table grudges(
+  id integer primary key,
+  holder integer not null,
+  against integer not null,
+  reason text not null,
+  foreign key(holder) references people(id),
+  foreign key(against) references people(id)
+);
+```
+
+Next we’ll need a dummy database:
+
+```
+sqlite3 db.sqlite
+SQLite version 3.39.1 2022-07-13 19:41:41
+Enter ".help" for usage hints.
+sqlite> .read schema.sql
+sqlite> insert into people values (1, 'ian');
+sqlite> insert into people values (2, 'jeffrey');
+sqlite> insert into grudges values (1, 1, 2, 'claimed that my chapter on macros was "impenetrable"');
+sqlite> insert into grudges values (2, 1, 2, 'doesn''t even have any dogs');
+```
+
+Next we’ll write some code to generate functions to query that schema. I’m waving my hands over how I have the `sqlite3` Janet package; we’ll talk more about using libraries in Chapter Seven.
+
+querify.janet
+
+```
+(import sqlite3)
+
+(defmacro querify [schema-file]
+
+  (defn table-definition [table-name]
+    ~(defn ,(symbol table-name) [conn]
+      # This might be vulnerable to some kind of wild SQL injection attack
+      # if an attacker somehow controls your schema file (???), but you can't
+      # bind table names as parameters and also this is definitely fine.
+      (sqlite3/eval conn ,(string/format "select * from %s;" table-name))))
+
+  (def conn (sqlite3/open ":memory:"))
+  (sqlite3/eval conn (string (slurp schema-file)))
+  (def tables
+    (->> (sqlite3/eval conn "select name from sqlite_schema where type = 'table';")
+      (map |($ :name))
+      (filter |(not (string/has-prefix? "sqlite_" $)))))
+  (sqlite3/close conn)
+
+  ~(upscope
+    ,;(map table-definition tables)))
+
+(querify "schema.sql")
+
+(defn main [&]
+  (def conn (sqlite3/open "db.sqlite"))
+  (pp (people conn))
+  (pp (grudges conn)))
+```
+
+Look! We’re able to call the functions `people` and `grudges` that only exist because there are tables with those names in our schema.
+
+```
+janet querify.janet
+@[{:id 1 :name "ian"} {:id 2 :name "jeffrey"}]
+@[{:against 2 :holder 1 :id 1 :reason "claimed that my chapter on macros was \"impenetrable\""} {:against 2 :holder 1 :id 2 :reason "doesn't even have any dogs"}]
+```
+
+Once again: I’m not really endorsing this. This is just a party trick. It’s a quick and dirty example of how easy it is to generate code at compile time, but you could imagine applying this technique in a different situation where it would actually be useful. For example, you could query the National Weather Service and make your code execute more slowly if someone compiles it on a rainy day. They have an API, you know.
+
+=> https://www.weather.gov/documentation/services-web-api They have an API
+
+But before we do that, let’s make sure that we actually understand this macro first. That `tables` expression is probably the trickiest part of all of this to digest, because I snuck in some new stuff, but I’ll walk you through it.
+
+```
+(def tables
+  (->> (sqlite3/eval conn "select name from sqlite_schema where type = 'table';")
+    (map |($ :name))
+    (filter |(not (string/has-prefix? "sqlite_" $)))))
+```
+
+Loosely speaking, you can read `->>` as a Janet analog of method-chaining in JavaScript. It’s a macro that— hey! Wait!
+
+It’s a macro!
+
+And it’s actually an example of a *good* macro. So let’s put a pin in whatever nonsense we were doing for a bit, and let’s talk about `->>`.
+
+```
+(->> (sqlite3/eval conn "select name from sqlite_schema where type = 'table';")
+  (map |($ :name))
+  (filter |(not (string/has-prefix? "sqlite_" $))))
+```
+
+`->>` is pronounced “thread last.” All it does is take its first argument and stick it at the end of its second argument:
+
+```
+(->>
+  (map |($ :name)
+    (sqlite3/eval conn "select name from sqlite_schema where type = 'table';"))
+  (filter |(not (string/has-prefix? "sqlite_" $))))
+```
+
+And then it repeats that until there aren’t any expressions left to merge:
+
+```
+(->>
+  (filter |(not (string/has-prefix? "sqlite_" $))
+    (map |($ :name)
+      (sqlite3/eval conn "select name from sqlite_schema where type = 'table';"))))
+
+(filter |(not (string/has-prefix? "sqlite_" $))
+  (map |($ :name)
+    (sqlite3/eval conn "select name from sqlite_schema where type = 'table';")))
+```
+
+Neat. `->>` is a nice bit of syntax sugar that lets us reduce the amount of paren-nesting we have to contend with. It’s also a much simpler macro than the weird metaprogramming function-generation thing we’re doing right now, and probably would have made a better first example, but it’s too late to change that now.
+
+Here’s one way we could implement it, taking advantage of the fact that Janet will continue expanding macros until there aren’t any left to expand to implement a sort of recursive macro without an explicit recursive call:
+
+```
+(defmacro my->> [first & rest]
+  (match rest
+    [next & rest] ~(my->> (,;next ,first) ,;rest)
+    [] first))
+```
+
+The order of the cases in this `match` expression is, unfortunately, very important. We’ll talk more about that in Chapter Six.
+
+In addition to `->>`, there’s also `->` (“thread first”), which as you might expect from the name does the same thing but threads values as the first argument instead of the last one, as well as `-?>` and `-?>>`, which short-circuit `nil` values, plus `as->` and `as?->` which allow you to thread into any position.
+
+=> https://janetdocs.com/as-%3E `as->`
+=> https://janetdocs.com/as_q-%3E `as?->`
+
+Alright; let’s get back to the `tables` expression:
+
+```
+(def tables
+  (->> (sqlite3/eval conn "select name from sqlite_schema where type = 'table';")
+    (map |($ :name))
+    (filter |(not (string/has-prefix? "sqlite_" $)))))
+```
+
+The next weird thing is `|($ :name)`. This is just a shorthand way to create an anonymous function: `|($ :name)` is exactly the same as `(fn [$] ($ :name))`, and `(struct :key)` is one way to look up the value of a key on a table or struct. It *looks* like a function call, but the thing being “called” is not a function, so Janet does a lookup instead. We could also write `|(in $ :name)` to make the lookup explicit.
+
+So the whole expression is equivalent to the following JavaScript:
+
+```
+const tables = conn.eval("select name from sqlite_schema where type = 'table';")
+  .map(x => x.name)
+  .filter(name => !name.startsWith("sqlite_"));
+```
+
+Alright. Hopefully now you can understand how the `querify` macro works, but I think it’s always easier to understand macros by looking at their “expansions.”
+
+The easiest way to do this is to open up the Janet repl with our script loaded in, and to invoke the function `macex1`:
+
+janet -l ./querify
+
+```
+repl:1:> (macex1 '(querify "schema.sql"))
+(upscope
+  (defn people [conn]
+    (sqlite3/eval conn "select * from people;"))
+  (defn grudges [conn]
+    (sqlite3/eval conn "select * from grudges;")))
+```
+
+I reformatted that for clarity. Janet will of course just dump it all on one line.
+
+`macex1` (“macro expand once”) is not a macro; it’s a function that expects an abstract syntax tree, so we have to quote the expression we want it to expand.
+
+We could also use `macex`, which will fully expand its argument:
+
+```
+repl:2:> (macex '(querify "schema.sql"))
+(upscope
+  (def people "(people conn)\n\n"
+    (fn people [conn]
+      (sqlite3/eval conn "select * from people;")))
+  (def grudges "(grudges conn)\n\n"
+    (fn grudges [conn]
+      (sqlite3/eval conn "select * from grudges;"))))
+```
+
+And here we can see that `defn` is just a macro that expands to `(def ... (fn ..))`, with a docstring added for good measure. Since this is further away from what we actually wrote, I find that sometimes it’s harder to understand the fully expanded output. I usually prefer to keep calling `(macex1 _)` until I reach the fixed point.
+
+So, just to recap: every time we compile this program, we create an in-memory SQLite database, load in our schema, and then query that database to get a list of table names. And then we generate some functions with the same names. And then we compile them into our image.
+
+If you were able to follow all of that, then congratulations: you just earned your macro white belt.
+
+Actually, ugh. No. Not quite yet. I’m sorry. You’re really close, and you’re doing great, and I know this chapter is way too long already. But we can’t actually leave until we talk about *hygiene*.
+
+But you’re tired, and I’m tired, and this is a lot of information to take in at once, and hygiene is sort of a tricky concept to wrap your head around at the best of times.
+
+So here’s all I’m going to say about it for now:
+
+each-reverse.janet
+
+```
+(defmacro each-reverse [identifier list & body]
+  ~(do
+    (var i (- (length ,list) 1))
+    (while (>= i 0)
+      (def ,identifier (in ,list i))
+      ,;body
+      (-- i))))
+```
+
+This macro is simple enough. And it looks like it works just fine:
+
+hygiene.janet
+
+```
+(use ./each-reverse)
+
+(each-reverse num [1 2 3 4 5]
+  (print num))
+
+janet hygiene.janet
+5
+4
+3
+2
+1
+```
+
+But if we try this alternative…
+
+name-clash.janet
+
+```
+(use ./each-reverse)
+
+(each-reverse i [1 2 3 4 5]
+  (print i))
+
+janet name-clash.janet
+name-clash.janet:4:1: compile error: cannot set constant
+```
+
+We learn that this macro is actually *fragile*.
+
+And if we continue interrogating it:
+
+over-eval.janet
+
+```
+(use ./each-reverse)
+
+(each-reverse x (do (os/sleep 1) [1 2 3 4 5])
+  (print x))
+
+time janet over-eval.janet
+5
+4
+3
+2
+1
+janet over-eval.janet  0.01s user 0.00s system 0% cpu 6.038 total
+```
+
+We can see that it’s quite inefficient as well.
+
+If you think about these programs in terms of their expanded abstract syntax trees, it’s easy to see why these problems happen:
+
+name-clash.expanded.janet
+
+```
+(do
+  (var i (- (length [1 2 3 4 5]) 1))
+  (while (>= i 0)
+    # we accidentally shadow i
+    (def i (in [1 2 3 4 5] i))
+    (print i)
+    (-- i)))
+```
+
+over-eval.expanded.janet
+
+```
+(do
+  (var i (- (length (do (os/sleep 1) [1 2 3 4 5])) 1))
+  (while (>= i 0)
+    # we re-evaluate the list on every iteration
+    (def x (in (do (os/sleep 1) [1 2 3 4 5]) i))
+    (print x)
+    (-- i)))
+```
+
+But it isn’t clear what we can do to stop it.
+
+Now, since you know what the macro is going to expand to, you could carefully avoid making any variables called `i`, and you could make sure that you only pass in a pure, simple expression as your `list`.
+
+But that’s terrible. Macros should be referentially transparent: you should be able to call a macro without any idea of the actual abstract syntax tree that it produces. A macro that you have to handle with gloves on is not a good macro, in my book.
+
+But there’s a bit of an art to writing *robust*, referentially transparent macros. It’s not hard to do, but it’s not trivial, and I think it deserves a chapter of its own.
+
+But not, umm, not the next chapter. We’ve done enough metaprogramming for now. Let’s switch to something else, and circle back to this in Chapter Thirteen.
+
+=> chapter-04.gmi Chapter Four: Pegular Expressions →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
