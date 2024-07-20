@@ -1,3 +1,3 @@
 # Книги на русском
 
-=> detskaya/index.gmi Детская литература
+=> detskaia/index.gmi Детская литература
