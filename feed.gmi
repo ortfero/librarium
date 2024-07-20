@@ -1,3 +1,4 @@
 # Librarium
 
 => en/computers/languages/henry--janet_for_mortals/chapter-01.gmi 2024-07-19 Janet for Mortals. Chapter One: Values and References
+=> en/computers/languages/henry--janet_for_mortals/chapter-02.gmi 2024-07-21 Janet for Mortals. Chapter Two: Compilation and Imagination
