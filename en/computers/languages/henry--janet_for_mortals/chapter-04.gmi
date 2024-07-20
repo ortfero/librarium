@@ -1,0 +1,581 @@
+# Janet for Mortals
+
+## Chapter Four: Pegular Expressions
+
+Janet does not have native, built-in regular expressions.
+
+You *can* use a third-party regular expression library if you really have to, I dunno, validate an email address or something. But most of the time, if you’re writing Janet, you’ll be writing PEGs instead.
+
+=> https://stackoverflow.com/a/201378 validate an email address
+
+PEG stands for “parsing expression grammar,” which is a mouthful, so I’m going to stick with the acronym, even though I just wrote a whole chapter about macros without abbreviating AST once.
+
+As a first — extremely crude — approximation, you can think of PEGs as an alternative notation for writing regular expressions. That’s not actually correct — PEGs are quite a bit more powerful than regular expressions, for starters, and they behave differently in a few respects — but we have to start somewhere, and this will let us re-use a lot of our existing knowledge.
+
+Here, let’s look at a few random regular expressions, and see how we’d write them in PEG format.
+
+```
+regex: .*
+  peg: (any 1)
+```
+
+`1` means “match one byte.” `any` means “zero or more.”
+
+```
+regex: (na)+
+  peg: (some "na")
+```
+
+Strings match literally. There are no special characters to escape. `some` means “one or more.”
+
+```
+regex: \w{1,3}
+  peg: (between 1 3 (choice :w "_"))
+  peg: (between 1 3 (+ :w "_"))
+```
+
+Janet’s `:w` does not include `_`, so we use `+` to say “word character or underscore.” `(+ ...)` is an alias for `(choice ...)`. `between` is inclusive on both ends.
+
+```
+regex: [^a-z-]
+  peg: (not (choice "-" (range "az")))
+  peg: (! (+ "-" (range "az")))
+```
+
+`(! ...)` is an alias for `(not ...)`. You can negate any PEG, not just character classes.
+
+```
+regex: [a-z][0-9]?
+  peg: (sequence (range "az") (opt (range "09")))
+  peg: (* (range "az") (? (range "09")))
+```
+
+`*` matches all of its arguments in order. `(* ...)` is an alias for `(sequence ...)`. `?`` means “zero or one,” and `(? ...)` is an alias for `(opt ...)`.
+
+Those are pretty random examples, and this is nowhere near an exhaustive list, but it’s enough for you to start forming a general idea. Let’s notice a few things from this:
+
+* PEGs are quite a bit more verbose than regular expressions.
+
+  I wouldn’t want to write PEGs for, like, searching in my text editor, but in code I think the verbosity is almost always a good thing: it makes them easier to read and easier to modify.
+
+  And when you’re writing “real” PEGs, you will break up large patterns into smaller, named components, which will prevent any single pattern from becoming unwieldy.
+
+* PEGs use a lot of characters that usually mean something else.
+
+  Like `(+ first second third)`. That’s not addition; it’s choice. How does that work?
+
+  Well, I didn’t state this explicitly, but PEGs are actually written *quoted*. A PEG is not `(some "na")`; it’s actually `['some "na"]`. There is no function called `some`; the symbol itself is meaningful to the functions that consume PEGs.
+
+  It’s conventional to write PEGs as quasiquoted forms: `~(some "na")`, so that you can easily interpolate other values into them. (We’ll get to that soon.)
+
+* PEGs are structured trees, rather than strings.
+
+  This makes it easy to *compose* PEGs out of smaller pieces, which we’ll start to do soon, or to write functions that manipulate PEGs in the same way that we are used to manipulating abstract syntax trees.
+
+  PEGs aren’t Janet abstract syntax trees, but you can see that they have a lot in common: they represent a tree structure out of nested tuples, lots of quoted symbols, and some numbers or strings or other values mixed in as well. In fact there is a general term for this kind of value: both abstract syntax trees and PEGs are examples of “symbolic expressions.”
+
+Alright, now let’s talk about some of the ways that these patterns differ from their regular expression equivalents.
+
+First off, PEGs are always anchored to the beginning of the input, so there’s no equivalent “start of input” pattern. So `(any 1)` is *actually* equivalent to the regular expression `^.*`.
+
+Except, no, that’s not strictly true. Because PEGs *do not backtrack*. Which means that all repetition is implicitly “possessive” to use the regular expression term. So `(any 1)` is *actually actually* equivalent to `^.*+``, which is not a construct that JavaScript’s regular expression engine supports.
+
+=> https://www.regular-expressions.info/possessive.html possessive
+
+The distinction is irrelevant in this case, but it matters for something like `[ab]*[bc]` — that will match `bbb`, but `[ab]*+[bc]`, or the equivalent PEG `(* (any (+ "a" "b")) (+ "b" "c"))`, will not.
+
+PEGs *do* backtrack when using the `choice` combinator, as well as a few others. But backtracking is always obvious and explicit, as opposed to regular expressions’ implicit backtracking everywhere. This makes it less likely that you’ll accidentally write a PEG that executes in exponential time.
+
+Alright. There’s one more thing we should talk about before we get to a concrete example: numbers.
+
+We’ve seen `1` already, as a way to match any byte. You can write any other integer — `2`, say, or even `3` — to match exactly that number of bytes.
+
+But you can also write *negative* numbers. Negative numbers don’t advance the input at all, and they fail if you *could* advance that many characters. So `-4` will fail unless there are *fewer* than four bytes left in the input. In practice I’ve only ever used this to write `-1`, which means “end of input”. I don’t think `-1` is a particularly intuitive way to write “end of input,” so I wanted to call this out ahead of time.
+
+Now that we’ve covered the basics, let’s look at a real example. Let’s write an HTML pretty printer.
+
+```
+(defn element-to-struct [tag attrs children]
+  {:tag tag :attrs (struct ;attrs) :children children})
+
+(def html-peg (peg/compile
+  ~{:main (* :nodes -1)
+    :nodes (any (+ :element :text))
+    :element (unref
+      {:main (/ (* :open-tag (group :nodes) :close-tag) ,element-to-struct)
+       :open-tag (* "<" (<- :w+ :tag-name) (group (? (* :s+ :attributes))) ">")
+       :attributes
+         {:main (some (* :attribute (? :s+)))
+          :attribute (* (<- :w+) "=" :quoted-string)
+          :quoted-string (* `"` (<- (any (if-not `"` 1))) `"`)}
+       :close-tag (* "</" (backmatch :tag-name) ">")})
+    :text (<- (some (if-not "<" 1)))}))
+
+(defn main [&]
+  (def input (string/trim (file/read stdin :all)))
+  (pp (peg/match html-peg input)))
+```
+
+Okay wow; we’re just diving right in huh.
+
+First off, this isn’t really an HTML pretty printer; this is only an HTML *parser*. Well, strictly speaking, it’s a parser for a small subset of HTML — enough to make a point, without getting bogged down in minutiae.
+
+So what are we looking at here?
+
+First off, the outer pattern is a struct. The keys are names, and the values are patterns, and these patterns can reference other patterns by name — even recursively. Even *mutually* recursively, as you can see with `:nodes` and `:element` referring to one another.
+
+We’ve seen named patterns like `:w` before, when I said it was an analog of regular expressions’ `\w`. But those are only the default pattern aliases, and by writing a struct like this we can create our own custom aliases, with scoping rules that make sense: patterns inside nested structs can refer to elements in the “outer struct,” but not the other way around.
+
+Okay. Now let’s try to go through these individual patterns and make sure we understand them.
+
+```
+:main (* :nodes -1)
+:nodes (any (+ :element :text))
+```
+
+The name `:main` is special, as that will be the pattern’s entry-point. This `:main` just calls `:nodes`, which matches zero or more `:elements` or `:text`s, and then asserts that there’s no input left. `(* "x" -1)` is like the regular expression `^x$`.
+
+```
+:text (<- (some (if-not "<" 1)))
+```
+
+`:text` uses a combinator that we haven’t seen before: `<-`.
+
+`<-` is an alias for `(capture ...)`. We haven’t talked about captures yet, but they work similarly to regular expressions’ captures.
+
+Just to quickly review, consider the regular expression `<([^<]*)>`. The parentheses around the innards there mean that there is a single “capture group,” and if we run this expression over a string, we can extract that match:
+
+```
+node
+Welcome to Node.js v16.16.0.
+Type ".help" for more information.
+> /<([^<]*)>/.exec('<hello> there')
+[
+  '<hello>',
+  'hello',
+  index: 0,
+  input: '<hello> there',
+  groups: undefined
+]
+```
+
+This returns an array of captured groups. The first element is the entire substring that matched the regular expression; the second is the text that matched the first (and in this case only) capture group.
+
+```
+> /<([^<]*)>/.exec('<hello> there')[1]
+'hello'
+```
+
+PEGs work similarly: when you match a PEG over a string, you get a list of captures back.
+
+```
+repl:1:> (peg/match ~(* "<" (any (if-not ">" 1)) ">") "<hello>")
+@[]
+```
+
+The list is empty here, because PEGs don’t implicitly capture anything. We have to explicitly ask for a capture, using `<-`:
+
+```
+repl:2:> (peg/match ~(* "<" (<- (any (if-not ">" 1))) ">") "<hello>")
+@["hello"]
+```
+
+We could also capture the entire matching substring, if we wanted to:
+
+```
+repl:3:> (peg/match ~(<- (* "<" (<- (any (if-not ">" 1))) ">")) "<hello>")
+@["hello" "<hello>"]
+```
+
+But note that captures show up “inside out.” `(<- pat)` first matches `pat`, which might push captures of its own, and *then* it pushes the text that `pat` matched.
+
+So far this looks basically like regex country. But PEGs allow you to do *so much more* with captures. Here, let’s look at a slightly more interesting example:
+
+```
+repl:4:> (peg/match ~(* "<" (/ (<- (any (if-not ">" 1))) ,string/ascii-upper) ">") "<hello>")
+@["HELLO"]
+```
+
+We have to unquote `string/ascii-upper` because we actually want the *function* in our PEG, not the symbol `'string/ascii-upper`. This is why we’re using quasiquote instead of regular quote.
+
+`(/ ...)` is an alias for `(replace ...)`, which is a misleading name: if you pass it a function, it doesn’t *replace* the capture with the function, but actually maps the function over the captured value. And if you pass it a table or a struct, it looks up the capture as a key and replaces it with the value. If you pass any other values, then it actually replaces. (If actually you want to actually replace a capture with a function or a table, you have to wrap it in a function that ignores its argument.)
+
+So we’re mapping the function `string/ascii-upper` over the value captured by `(<- (any (if-not ">" 1)))`, which happens to produce a new string. But it doesn’t have to!
+
+```
+repl:5:> (peg/match ~(* "<" (/ (<- (any (if-not ">" 1))) ,length) ">") "<hello>")
+@[5]
+```
+
+Our captures can be *any* Janet values — they don’t have to be strings. `(<- pat)` always captures the string that `pat` matches, but you can always map it, and there are other combinators that capture other things. Take `$`:
+
+```
+repl:6:> (peg/match ~(* "<" (* (<- (any (if-not ">" 1))) ($)) ">") "<hello>")
+@["hello" 6]
+```
+
+`($)`` is an alias for `(position)`. It’s a pattern that always succeeds, consumes no input, and adds the current byte index to the capture stack. There’s also `(line)` and `(column)`, which do what you expect.
+
+But the most useful capture alternative is the `constant` operator. (constant x) always succeeds, consumes no input, and adds an arbitrary value to the capture stack. It’s useful for parsing text into something with a little more structure:
+
+```
+repl:7:> (peg/match ~(any (+
+    (* "↑" (constant :up))
+    (* "↓" (constant :down))
+    (* "←" (constant :left))
+    (* "→" (constant :right))
+    (* "A" (constant :a))
+    (* "B" (constant :b))
+    (* "START" (constant :start))
+    1))
+    "↑↑↓↓←→←→ B A START")
+@[:up :up :down :down :left :right :left :right :b :a :start]
+```
+
+Unconditional capture with `constant` is useful, but note that in this particular case we would probably just write:
+
+```
+repl:8:> (peg/match ~(any (+
+    (/ "↑" :up)
+    (/ "↓" :down)
+    (/ "←" :left)
+    (/ "→" :right)
+    (/ "A" :a)
+    (/ "B" :b)
+    (/ "START" :start)
+    1))
+    "↑↑↓↓←→←→ B A START")
+@[:up :up :down :down :left :right :left :right :b :a :start]
+```
+
+Okay. This has been: PEG Captures 101. Now let’s get back to our HTML example.
+
+```
+:text (<- (some (if-not "<" 1)))
+```
+
+Right. So `(<- (some (if-not "<" 1)))` is equivalent to the regular expression `^([^<]++)`. It tries to match `"<"`, and *if that fails* — if the next character is not `<` — then it advances by one character. And then it repeats, until it finds a `<` character or runs out of input, and finally it adds the entire string it consumed to the capture stack.
+
+So if we give it the following input, it’s going to match the following substring:
+
+```
+hello yes this is <b>janet</b>
+```
+
+Easy. The next part is… not so easy.
+
+```
+:element (unref
+  {:main (/ (* :open-tag (group :nodes) :close-tag) ,element-to-struct)
+   :open-tag (* "<" (<- :w+ :tag-name) (group (? (* :s+ :attributes))) ">")
+   :attributes
+     {:main (some (* :attribute (? :s+)))
+      :attribute (* (<- :w+) "=" :quoted-string)
+      :quoted-string (* `"` (<- (any (if-not `"` 1))) `"`)}
+   :close-tag (* "</" (backmatch :tag-name) ">")})
+```
+
+But we’ll take it one step at a time, and it’ll be fine.
+
+The whole pattern is wrapped in `unref`, but I can’t actually explain that until the end, so we’ll skip over it for now and jump straight to `:main`. We’ll circle back to `unref` after we talk about backreferences.
+
+```
+:main (/ (* :open-tag (group :nodes) :close-tag) ,element-to-struct)
+```
+
+So an `:element` consists of an opening tag, some child nodes, and then a matching closing tag. Like `<i>hello</i>`.
+
+But we don’t match `:nodes`; we match `(group :nodes)`. Because recall that `:nodes` is going to push multiple nodes onto the capture stack:
+
+```
+:nodes (any (+ :element :text))
+```
+
+Specifically, anything captured in `:element` or `:text`. But `(group :nodes)` says “well, instead of pushing every capture individually, wrap all the captures into a tuple and push that tuple”. So we’ll match multiple nodes, but we’ll only have a single (possibly empty!) list of nodes on the capture stack when we’re done.
+
+After we parse all of a tag’s individual components — tag name, attributes, and children — we’ll call `element-to-struct` to wrap it up into a nicer format. Note that `element-to-struct` actually takes three arguments: one for each of `:element`’s capture groups. (The tag name and attributes are captured by the `:open-tag` sub-pattern.)
+
+But actually matching the tags is the interesting bit.
+
+```
+:open-tag (* "<" (<- :w+ :tag-name) (group (? (* :s+ :attributes))) ">")
+:close-tag (* "</" (backmatch :tag-name) ">")
+```
+
+I want to draw your attention to `(<- :w+ :tag-name)`. This is a *tagged* capture, and `:tag-name` is its “tag”. When you tag a capture, you can refer back to it later in the match — that’s exactly what `(backmatch :tag-name)` does.
+
+But hark! There might be *multiple* tagged captures to contend with.
+
+```
+<p>If you have <em>nested</em> tags</p>
+```
+
+`<p>` will push a tagged capture to the stack, and so will `<em>`. So now there are two captures tagged `:tag-name`. But when we `backmatch`, we’re going to look for the most recent time we tagged a capture with `:tag-name` — which is going to be `"em"`. This will match `</em>` successfully, but of course it will fail once we get to `</p>`.
+
+And that’s bad! What we want to do is “scope” the tagged matches, so that parsing the `<em>` tag doesn’t leak out to our parsing of the `<p>` tag.
+
+So that’s exactly what `unref` does. It says “after you’re done parsing this pattern, remove all of the tags that you associated with any captures.” By wrapping `unref` around our `:element`, we make these tagged captures local to each `<tag>`.
+
+Wow, it sure is confusing that HTML tags are called tags and capture tags are also called tags. Someone really could have picked a better example to introduce tagging, huh?
+
+Okay, now you might be thinking: why is this a problem? Sure, we pushed `"em"` to the capture stack, but then we popped it off! We `replace`d it with an untagged struct when we called `element-to-struct`, right? Why can `backmatch` still see it?
+
+Well, tagged captures are actually separate from the capture stack. `backmatch` doesn’t look for “the uppermost capture on the stack with this tag” — the tags don’t live on the capture stack at all. `backmatch` actually looks for “the last time we captured something with this tag.”
+
+To help make this make sense, I’m going to describe a model of how you might implement a simple PEG matcher. We’ll keep track of two pieces of state: a stack of stacks, and a stack of tag scopes. We’ll start with a single stack on the stack-stack, and a single scope on the scope-stack, and different combinators will manipulate these.
+
+The `group` combinator, for example, pushes a new stack onto the stack-stack, executes its pattern, and then pops that new stack and pushes it onto next highest stack (as a tuple). The `replace` combinator pushes a new stack, executes its pattern, then pops it off the stack-stack, passing its contents as positional arguments to its function. And then it pushes the return value to the new topmost stack on the stack-stack.
+
+Meanwhile `unref` pushes a new *tag scope*, executes its pattern, and then pops the tag scope once it’s done. `unref` is the only combinator that affects the tag scope stack.
+
+You can actually pass a specific named tag to `unref` to only “scope” that *particular* tag name, allowing you to leak some tags into the outer scope. So in that case `unref` pushes a new tag scope, executes its pattern, and then copies everything *except* the named tag into the outer scope.
+
+Alright. Now the only thing we haven’t talked about is the `:attributes` bit.
+
+```
+:attributes
+  {:main (some (* :attribute (? :s+)))
+   :attribute (* (<- :w+) "=" :quoted-string)
+   :quoted-string (* `"` (<- (any (if-not `"` 1))) `"`)}
+```
+
+And I actually don’t think there’s much to say about this? You’ve seen it all already. This is easy. `:s+` is “one or more whitespace characters,” and is one of many named patterns available by default.
+
+Alright. That wasn’t so bad, was it?
+
+```
+(defn element-to-struct [tag attrs children]
+  {:tag tag :attrs (struct ;attrs) :children children})
+
+(def html-peg (peg/compile
+  ~{:main (* :nodes -1)
+    :nodes (any (+ :element :text))
+    :element (unref
+      {:main (/ (* :open-tag (group :nodes) :close-tag) ,element-to-struct)
+       :open-tag (* "<" (<- :w+ :tag-name) (group (? (* :s+ :attributes))) ">")
+       :attributes
+         {:main (some (* :attribute (? :s+)))
+          :attribute (* (<- :w+) "=" :quoted-string)
+          :quoted-string (* `"` (<- (any (if-not `"` 1))) `"`)}
+       :close-tag (* "</" (backmatch :tag-name) ">")})
+    :text (<- (some (if-not "<" 1)))}))
+
+(defn main [&]
+  (def input (string/trim (file/read stdin :all)))
+  (pp (peg/match html-peg input)))
+```
+
+When you look at it all at once, it is pretty intimidating. But just think what the equivalent regular expression would look like! Oh, wait. You can’t. Parsing HTML with regexes is famously impossible.
+
+=> https://stackoverflow.com/a/1732454 famously impossible
+
+We’ve already seen a lot of useful PEG combinators, but we’re not limited to the built-in operations that Janet gives us. We can actually interleave arbitrary functions into a PEG, and use them to guide the matching process. This allows us to write custom predicates to express complicated matching logic that would be very difficult to implement natively in a PEG (“identifier with more vowels than consonants”), but it’s especially useful when we already have a regular function that knows how to parse strings.
+
+For example, `scan-number` is a built-in function that parses numeric strings into numbers:
+
+```
+repl:1:> (scan-number "512")
+512
+repl:2:> (scan-number "512x")
+nil
+```
+
+If we wanted to parse a number somewhere in a PEG, then… well, we’d use the built-in `(number)` operator that does exactly that. But let’s pretend that that doesn’t exist for a second, and try to implement it in terms of `scan-number`. Here’s a first attempt:
+
+```
+repl:1:> (peg/match ~(/ (<- (some (+ :d (set ".-+")))) ,scan-number) "123")
+@[123]
+```
+
+That works, sometimes. But of course that number pattern is not very accurate, and we already saw that `scan-number` will return `nil` if we give it a bad input:
+
+```
+repl:2:> (peg/match ~(/ (<- (some (+ :d (set ".-+")))) ,scan-number) "1-12-3+3.-++")
+@[nil]
+```
+
+But the match still succeeded, and captured `nil`, because that was what we told it to do.
+
+So we *could* try to carefully write a valid number pattern here, such that we only ever pass valid input to `scan-number`. But we don’t want to do that. That sounds hard. We just want the pattern to *fail* if `scan-number` can’t actually parse a number.
+
+Enter `cmt`:
+
+```
+repl:3:> (peg/match ~(cmt (<- (some (+ :d (set ".-+")))) ,scan-number) "1-12-3+3.-++")
+nil
+```
+
+So `cmt` is very similar to `replace`, except that if your function returns something falsy (remember: just `nil` or `false`), then the `cmt` clause itself will fail to match. It’s sort of like a `map` vs `filterMap` situation.
+
+Of course in real life, as previously mentioned, we’d just write this:
+
+```
+repl:1:> (peg/match ~(number (some (+ :d (set ".-+")))) "123")
+@[123]
+```
+
+`cmt` stands for “match-time capture,” apparently, even though the letters are not in that order. The name comes to us from LPEG, the Lua PEG library that inspired Janet’s PEG library, where all capture-related functions start with `C`. It’s a very useful function despite the confusing name, and there’s something else that makes it even more useful: the `->`` operator.
+
+=> http://www.inf.puc-rio.br/~roberto/lpeg/ LPEG
+
+`->` stands for `backref`, and it looks quite strange at first glance: all it does is re-capture a previously tagged capture. If you just used it by itself, it would duplicate previously tagged captures onto the capture stack and consume no input, which doesn’t sound very useful.
+
+```
+repl:1:> (peg/match ~(* (<- :d+ :num) (-> :num)) "123")
+@["123" "123"]
+```
+
+But if you use it inside the pattern you pass to `cmt`, you can add previous captures as arguments to your custom mapping predicate.
+
+Here’s a concrete, if extremely dumb, example: I’ve invented my own HTML dialect that is identical to regular HTML, except that `<head>` tags can optionally be closed with a `</tail>` tag, because that’s modestly whimsical.
+
+Previously we were able to use `backmatch` to match closing tags, because they happened to be bytewise-identical to the values we captured in `:open-tag`:
+
+```
+:close-tag (* "</" (backmatch :tag-name) ">")
+```
+
+But now that’s no longer true, and `backmatch` isn’t sufficient to handle this very practical HTML dialect. We’ll have to write some logic:
+
+```
+(defn check-close-tag [open-tag close-tag]
+  (or (= open-tag close-tag)
+      (and (= open-tag "head")
+           (= close-tag "tail"))))
+
+:close-tag (* "</" (drop (cmt (* (-> :tag-name) (<- :w+)) ,check-close-tag)) ">")
+```
+
+Notice that we “re-capture” `:tag-name`, in addition to capturing the `:w+``. Because `cmt` needs a single pattern to execute, I stuck them together with `*``, but both of these captures will be passed as arguments to `check-close-tag`.
+
+Neat.
+
+We are now very close to knowing everything there is to know about PEGs, but I think we should talk about one more thing before we leave this chapter:
+
+Regular expressions aren’t just useful for matching or extracting text. They’re also useful for *changing* text.
+
+Regex replace is a common primitive operation; you use it all the time in your editor or with `sed` or whatever. And of course Janet has a native `peg/replace` function, and we’re going to talk about it soon.
+
+But let’s just *pretend*, for a moment, that it doesn’t exist. Because it turns out that you don’t actually *need* a built-in PEG replace function: you can implement replacement as a special case of capturing.
+
+It’s a pretty simple trick: we’re going to write a PEG that captures two things: the part of the string that matches the pattern we want to replace, and the entire rest of the string.
+
+Just so we have something concrete to work with, let’s write a chaotic evil PEG: given a string, we’ll find all of the Oxford commas in that string, and replace them with Oxford semicolons.
+
+So given input like this:
+
+```
+this is dumb, confusing, and upsetting
+```
+
+We’ll wind up with:
+
+```
+this is dumb, confusing; and upsetting
+```
+
+Naturally.
+
+So the PEG itself is easy: we just want to match the literal string `", and"`, wherever it appears in the input:
+
+```
+repl:1:> (peg/match ~(any (+ ", and" 1)) "a, b, and c")
+@[]
+```
+
+Okay. It did work; you just can’t tell. Let’s replace it, which will automatically capture the output, so we can at least see that it’s working:
+
+```
+repl:2:> (peg/match ~(any (+ (/ ", and" "; and") 1)) "a, b, and c")
+@["; and"]
+```
+
+Okay. And now let’s *also* capture everything else:
+
+```
+repl:3:> (peg/match ~(any (+ (/ ", and" "; and") (<- 1))) "a, b, and c")
+@["a" "," " " "b" "; and" " " "c"]
+```
+
+And we’re done! Sort of! We have the entire modified string, as a list of captures, and all we have to do now is stick them back together.
+
+And I know: this looks *unbelievably* inefficient. And it would be, if we just called, like, `string/concat` on this result. But Janet has a way to efficiently join these matches together without even making these intermediate string allocations in the first place.
+
+It’s called `accumulate`, although I’m going to use the short alias `%``:
+
+```
+repl:4:> (peg/match ~(% (any (+ (/ ", and" "; and") (<- 1)))) "a, b, and c")
+@["a, b; and c"]
+```
+
+And `accumulate` is special-cased in the PEG engine: while Janet is executing the pattern inside an `accumulate` block, anything that would normally push captures onto the stack *instead* just copies it into a shared mutable buffer. And once it’s done with its pattern, that buffer becomes a string, and `accumulate` pushes it onto the capture stack.
+
+So that’s a *global* replace. But what if you only want to replace the first occurrence?
+
+Here’s one way:
+
+```
+repl:5:> (peg/match ~(% (any (+ (* (/ ", and" "; and") (<- (to -1))) (<- 1)))) "a, and b, and c")
+@["a; and b, and c"]
+```
+
+After we match and replace the pattern, we immediately consume the rest of the string, so that the `any` repetition won’t fire again.
+
+Hey look! We did it. `accumulate` was the last combinator on my list of combinators to tell you about, and I just told you about it. That means we’re almost done with the chapter now.
+
+But we get to do something fun and easy first. There’s actually another way that we could have written that last pattern:
+
+```
+repl:6:> (peg/match ~(% (any (+ (* (/ ", and" "; and") '(to -1)) '1))) "a, and b, and c")
+@["a; and b, and c"]
+```
+
+We replaced all of the `(<- x)` captures with just `'x`, which does exactly the same thing. How does that work?
+
+Well, `'x` is actually just syntax sugar for `(quote x)`. They both parse into exactly the same abstract syntax tree: if you’re writing a macro or a PEG engine or whatever else, you can’t actually tell whether it was originally written using the `'` shorthand or not. So when the whole thing is quasiquoted:
+
+```
+repl:7:> ~(% (any (+ (* (/ ", and" "; and") '(to -1)) '1)))
+(% (any (+ (* (/ ", and" "; and") (quote (to -1))) (quote 1))))
+```
+
+All of those single-quotes get expanded into `(quote)` forms, and `quote` is just another alias for `capture` in the PEG parser. But when you use the shorthand, you can save quite a few parentheses.
+
+Now, it’s fun to work through these examples, and I think it’s valuable to understand how they work, just in case you ever find yourself needing to perform some weird text surgery deep inside some complicated PEG. But of course, in real life, you only have to write:
+
+```
+repl:1:> (peg/replace ", and" "; and" "a, b, and c")
+@"a, b; and c"
+```
+
+There is also `(peg/replace-all)`, `(peg/find)`, which returns the index of the first match; and `(peg/find-all)`, which returns all of the indices where the PEG would match.
+
+Alright. That’s all of the important PEG stuff sorted, but I want to close with a few scattered, wandering observations:
+
+* PEGs operate on *bytes*, not characters.
+
+  So far we’ve only talked about parsing text, but you can write PEGs to parse binary formats just as easily. There are even built-in combinators for parsing signed and unsigned big- and little-endian integers up to 64 bits wide, which return the boxed `core/s64` and `core/u64` abstract types.
+
+* PEGs are harder to debug than regular expressions.
+
+  There are a million helpful “regex tester” websites that can show you your pattern as a finite state machine or interactively highlight different parts of matches or capture groups. But there is no equivalent for PEGs. If you’re running into trouble with your PEGs, well… you basically have to ask about it in the Janet chatroom, I think.
+
+  Do you want to make a PEG visualization website? You should. I would use that.
+
+* You can compile PEGs ahead of time.
+
+  You don’t *have* to do this — you can just pass the symbolic expression directly to `peg/match`, as we’ve been doing — but if you’re going to use a PEG more than once then it’s probably a good idea. Especially if you’re compiling your program — Janet will marshal an optimized bytecode representation of your PEG into the final image.
+
+  Note that `peg/compile` is a *function*, not a macro, so you’ll have to remember to call it at the top-level to ensure it executes during the compilation phase. There’s no reason to spend time compiling PEGs at runtime, after all, unless you’re dynamically constructing them.
+
+* You can define your own combinators.
+
+  PEGs are just symbolic expressions, and you already know how to write functions that manipulate symbolic expressions.
+
+* PEGs are the best.
+
+  PEGs really are one of my favorite things about Janet — I have never met a scripting language that made it *so easy* to parse text before.
+
+=> chapter-05.gmi Chapter Fibe: Concurrency and Coroutines →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
