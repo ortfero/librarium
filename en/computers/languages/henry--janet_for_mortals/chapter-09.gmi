@@ -1,0 +1,1156 @@
+# Janet for Mortals
+
+## Chapter Nine: Xenofunctions
+
+One thing that I really wish Janet had is a native *set* type. I love sets; they’re often the right way to model a problem. But usually when I write Janet code that wants a set, I have to write a table instead, and just set all the keys to `true`:
+
+```
+repl:1:> (def cities-visited @{})
+@{}
+repl:3:> (set (cities-visited "NYC") true)
+true
+repl:4:> (set (cities-visited "LA") true)
+true
+repl:5:> (set (cities-visited "NYC") true)
+true
+repl:6:> cities-visited
+@{"LA" true "NYC" true}
+```
+
+Which is okay! This is a pretty good way to hack up a set, but it’s not perfect. We can’t iterate over the elements with `each`; we have to use `eachk`, which means that other functions that act on iterable structures, like `filter` or `map`, won’t work on our “set.” This is… slightly annoying, but ultimately fine.
+
+But! Wouldn’t it be nice if there were a proper, built-in set type that we could use? Don’t you think that would be useful? Just say yes; it’ll get the actual chapter started.
+
+So, as we saw in the last chapter, we can’t implement a proper set as a pure Janet type, because we can’t override equality or iteration. We’re going to have to reach for some C code instead, which is actually *quite easy*. Writing native Janet modules in C isn’t some weird esoteric difficult thing; it’s a straightforward and even rather pleasant adventure.
+
+In order to get started, we’ll need to declare a native module. We’ll start small:
+
+project.janet
+
+```
+(declare-project :name "set")
+
+(declare-native
+  :name "set"
+  :source ["set.c"])
+```
+
+set.c
+
+```
+#include <janet.h>
+
+static Janet cfun_hello(int32_t argc, Janet *argv) {
+  janet_fixarity(argc, 0);
+  printf("hello world\n");
+  return janet_wrap_nil();
+}
+
+static JanetReg cfuns[] = {
+  {"hello", cfun_hello, "(hello)\n\nprints hello"},
+  {NULL, NULL, NULL}
+};
+
+JANET_MODULE_ENTRY(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+}
+```
+
+Sixteen lines! That’s all it takes to write a native module. I know some of the lines don’t make sense yet, but we’ll fix that soon. First, let’s see how easy it is to use this:
+
+main.janet
+
+```
+(import set)
+
+(set/hello)
+```
+
+Now, we can’t just run this with `janet main.janet`. We’ll need to build and install the native module first:
+
+```
+jpm install --local --verbose
+cc -c set.c -DJANET_BUILD_TYPE=release -std=c99 -I/usr/local/include/janet -I/Users/ian/src/janet-set/jpm_tree/lib -O2 -fPIC -o build/set.o
+generating meta file build/set.meta.janet...
+generating /Users/ian/src/janet-set/jpm_tree/lib/.manifests/set.jdn...
+cc -std=c99 -I/usr/local/include/janet -I/Users/ian/src/janet-set/jpm_tree/lib -O2 -o build/set.so build/set.o -shared -undefined dynamic_lookup -lpthread
+cc -c set.c -DJANET_BUILD_TYPE=release -DJANET_ENTRY_NAME=janet_module_entry_set -std=c99 -I/usr/local/include/janet -I/Users/ian/src/janet-set/jpm_tree/lib -O2 -o build/set.static.o
+ar rcs build/set.a build/set.static.o
+Installed as 'set'.
+copying build/set.so to /Users/ian/src/janet-set/jpm_tree/lib/...
+cp -rf build/set.so /Users/ian/src/janet-set/jpm_tree/lib/
+copying build/set.meta.janet to /Users/ian/src/janet-set/jpm_tree/lib/...
+cp -rf build/set.meta.janet /Users/ian/src/janet-set/jpm_tree/lib/
+copying build/set.a to /Users/ian/src/janet-set/jpm_tree/lib/...
+cp -rf build/set.a /Users/ian/src/janet-set/jpm_tree/lib/
+```
+
+Now we can run it:
+
+```
+jpm -l janet main.janet
+hello world
+```
+
+And see that it worked.
+
+But *how* did it work?
+
+Well, if we look at what this actually installed, we can see three files:
+
+```
+ls -l jpm_tree/lib
+total 120
+-rw-r--r--  1 ian   1.4K set.a
+-rw-r--r--  1 ian   136B set.meta.janet
+-rwxr-xr-x  1 ian    49K set.so
+```
+
+We have a static library and a dynamic library, plus a file of build information.
+
+If we import our library from the Janet repl, or from a script that we execute with the `janet` interpreter, we’ll dynamically link in the native module `set.so`. But if we ask `jpm` to compile a native executable, `jpm` will statically link in the `set.a` archive. The `set.meta.janet` file contains some information that `jpm` will use in order to statically link it properly:
+
+jpm tree/lib/set.meta.janet
+
+```
+# Metadata for static library set.a
+
+{ :cpp false
+  :ldflags (quote nil)
+  :lflags (quote nil)
+  :static-entry "janet_module_entry_set"}
+```
+
+So when we run `jpm -l janet main.janet`, we load the dynamic library, and somehow that gives us a function called `hello` in Janet.
+
+jpm -l repl
+
+```
+repl:1:> (use set)
+@{_ @{:value <cycle 0>} hello @{:private true} :macro-lints @[]}
+repl:2:> hello
+<cfunction set/hello>
+```
+
+But how did that work?
+
+Normally when we load a Janet module we get an environment, which is a regular Janet table. And that’s exactly what we get when we load a native module as well:
+
+```
+repl:2:> (require "set")
+@{hello @{:value <cfunction set/hello>} :native "/Users/ian/src/janet-set/jpm_tree/lib/set.so"}
+```
+
+But where did that table come from? Is there some marshaled environment table hiding in the dynamic library that we built?
+
+Well, no. It’s simpler than that. Let’s take a closer look at the C code that we wrote:
+
+```
+#include <janet.h>
+#include <stdio.h>
+
+static Janet cfun_hello(int32_t argc, Janet *argv) {
+  janet_fixarity(argc, 0);
+  printf("hello world\n");
+  return janet_wrap_nil();
+}
+
+static JanetReg cfuns[] = {
+  {"hello", cfun_hello, "(hello)\n\nprints hello"},
+  {NULL, NULL, NULL}
+};
+
+JANET_MODULE_ENTRY(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+}
+```
+
+`JANET_MODULE_ENTRY` is a macro, but we can expand it to something like this:
+
+cc -E set.c | sed -n '/2 "set.c"/,$p'
+
+```
+# 2 "set.c" 2
+
+static Janet cfun_hello(int32_t argc, Janet *argv) {
+  janet_fixarity(argc, 0);
+  printf("hello world\n");
+  return janet_wrap_nil();
+}
+
+static JanetReg cfuns[] = {
+  {"hello", cfun_hello, "(hello)\n\nprints hello"},
+  {((void*)0), ((void*)0), ((void*)0)}
+};
+
+ __attribute__((visibility ("default"))) JanetBuildConfig _janet_mod_config(void) { return ((JanetBuildConfig){ 1, 23, 1, (0 | 0) }); } __attribute__((visibility ("default"))) void _janet_init(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+}
+```
+
+If you peer past the `__attribute__` annotations, you can see that the `JANET_MODULE_ENTRY` macro defined two functions:
+
+```
+JanetBuildConfig _janet_mod_config(void) {
+  return ((JanetBuildConfig){ 1, 27, 0, (0 | 0) });
+}
+
+void _janet_init(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+}
+```
+
+`_janet_mod_config` is a function that returns the current version of Janet — when Janet dynamically loads a native module, it will first check to make sure that it was compiled with the same version of Janet.
+
+`_janet_init` is the interesting bit, though. It doesn’t actually return an environment table, but instead takes a freshly allocated table as an input and mutates it, installing all of the environment entries for our module.
+
+You’ll typically do this with the `janet_cfuns` helper, which is a function that iterates over a null-terminated array of `JanetReg` structs:
+
+```
+struct JanetReg {
+  const char *name;
+  JanetCFunction cfun;
+  const char *documentation;
+};
+```
+
+And installs them into the environment table, boxing the raw C function pointers into Janet `cfunction` values.
+
+But we could do *other* things in this function. We could execute arbitrary code to compute an environment. This function is a bit like top-level statements in a regular Janet file, except instead of running at compile time, it runs when the native module is loaded, so there *is* a runtime cost that we will pay either when the module is dynamically linked in, or on program startup if it’s statically linked.
+
+Just for fun, let’s compute something, and put it in the environment table manually:
+
+```
+JANET_MODULE_ENTRY(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+  janet_def(env, "answer", janet_wrap_integer(42), "the answer");
+}
+
+jpm -l janet -e '(import set) (print set/answer)'
+42
+```
+
+Very original.
+
+But alright, we’re probably not going to do that very often. For the most part we’re just going to define C functions that we can call from Janet code.
+
+So let’s talk about that:
+
+```
+static Janet cfun_hello(int32_t argc, Janet *argv) {
+  janet_fixarity(argc, 0);
+  printf("hello world\n");
+  return janet_wrap_nil();
+}
+```
+
+We’re going to see a lot of `Janet`s today, and I think it’s helpful to understand what the type actually is. A `Janet` is a small value — on x86 and x64 architectures, it’s implemented as a single word using a technique called “NaN boxing.” On other architectures it’s implemented as a tagged union consisting of a one-byte enum plus eight payload bytes. So on my computer with my C compiler, a `Janet` is two 64-bit words long: the first is a tag value; the second is either a pointer or a double or a boolean integer.
+
+The point is that we can pass `Janet` values around quite cheaply — copying a `Janet` is never going to copy an entire giant data structure; it will only copy a pointer to the data structure, even when we’re dealing with immutable tuples or structs.
+
+So, coming back to `cfun_hello`, you can see that it takes an array of `Janet`s and returns a `Janet` — specifically `janet_wrap_nil()`, which is the slightly verbose way that you write `nil` in the C API.
+
+Our function doesn’t actually take arguments, so we assert that the user didn’t pass us any. Unless you’re writing a fully variadic function, you should start all `cfunctions` with an arity assertion like this. They come in a few flavors:
+
+```
+// Exactly two arguments:
+janet_fixarity(argc, 2);
+
+// One, two, or three arguments:
+janet_arity(argc, 1, 3);
+
+// At least two arguments:
+janet_arity(argc, 2, -1);
+```
+
+I think that’s about all I can say about `cfun_hello`, so let’s move on to something real.
+
+We’re trying to make a `set` type, so let’s write down a `set/new` function. I want it to work like this:
+
+```
+repl:1:> (set/new 1 2 3)
+<set {1 2 3}>
+```
+
+So it will be a fully variadic function that returns… well, an abstract type, of course.
+
+An abstract type is just a record that contains a name and a bunch of function pointers:
+
+```
+struct JanetAbstractType {
+  const char *name;
+  int (*gc)(void *data, size_t len);
+  int (*gcmark)(void *data, size_t len);
+  int (*get)(void *data, Janet key, Janet *out);
+  void (*put)(void *data, Janet key, Janet value);
+  void (*marshal)(void *p, JanetMarshalContext *ctx);
+  void *(*unmarshal)(JanetMarshalContext *ctx);
+  void (*tostring)(void *p, JanetBuffer *buffer);
+  int (*compare)(void *lhs, void *rhs);
+  int32_t (*hash)(void *p, size_t len);
+  Janet(*next)(void *p, Janet key);
+  Janet(*call)(void *p, int32_t argc, Janet *argv);
+  size_t (*length)(void *p, size_t len);
+  JanetByteView(*bytes)(void *p, size_t len);
+};
+```
+
+The function pointers allow us to override different built-in bits of Janet functionality — you can probably guess what most of those do just from their names. Except, er, yeah, I don’t love to read function pointer signatures like that. This is a lot easier for me to read:
+
+```
+int gc(void *data, size_t len);
+int gcmark(void *data, size_t len);
+int get(void *data, Janet key, Janet *out);
+void put(void *data, Janet key, Janet value);
+void marshal(void *p, JanetMarshalContext *ctx);
+void *unmarshal(JanetMarshalContext *ctx);
+void tostring(void *p, JanetBuffer *buffer);
+int compare(void *lhs, void *rhs);
+int32_t hash(void *p, size_t len);
+Janet next(void *p, Janet key);
+Janet call(void *p, int32_t argc, Janet *argv);
+```
+
+Now there are lots of ways that we could choose to represent a set, but for now I am going to cheat a little: I’m going to implement a set as a regular Janet table, but wrapped in an abstract type. That way we won’t need to worry about actually implementing the data structure, and we can just focus on the abstract interface.
+
+So here’s how I’m going to write my `set/new` function:
+
+```
+static JanetTable *new_abstract_set() {
+  JanetTable *set = (JanetTable *)janet_abstract(&ampset_type, sizeof(JanetTable));
+  set->gc = (JanetGCObject){0, NULL};
+  janet_table_init_raw(set, argc);
+  return set;
+}
+
+static Janet cfun_new(int32_t argc, Janet *argv) {
+  JanetTable *set = new_abstract_set();
+  for (int32_t i = 0; i < argc; i++) {
+    janet_table_put(set, argv[i], janet_wrap_true());
+  }
+  return janet_wrap_abstract(set);
+}
+```
+
+We’re allocating memory for a `JanetTable` struct using the `janet_abstract` function, then we’re doing something weird and `JanetGCObject`-related, and then we’re calling `janet_table_init_raw`. Everything after that is pretty straightforward.
+
+The GC thing is only necessary because of the very weird thing that we’re doing of wrapping a `JanetTable` as an abstract type. I do want to explain this code, but understanding it requires understanding a few Janet implementation details that you absolutely do not need to understand to write any “normal” C functions. So consider the next aside to be *completely optional reading*.
+
+Let’s start from the top: when Janet creates new values, which it does in functions like `janet_table` and `janet_abstract`, it calls a (private!) function called `janet_gcalloc` to actually allocate that memory. `janet_gcalloc` is a simple function that basically just calls `malloc` and then sets a few fields at the beginning of the allocated memory.
+
+Specifically, `janet_gcalloc` assumes that the thing that it’s allocating is a (C!) struct that begins with a field of type `JanetGCObject`, which all Janet values do. For example, here’s what a table looks like:
+
+```
+struct JanetTable {
+  JanetGCObject gc;
+  int32_t count;
+  int32_t capacity;
+  int32_t deleted;
+  JanetKV *data;
+  JanetTable *proto;
+};
+```
+
+Here’s a tuple:
+
+```
+struct JanetTupleHead {
+  JanetGCObject gc;
+  int32_t length;
+  int32_t hash;
+  int32_t sm_line;
+  int32_t sm_column;
+  const Janet data[];
+};
+```
+
+And here’s an abstract type:
+
+```
+struct JanetAbstractHead {
+  JanetGCObject gc;
+  const JanetAbstractType *type;
+  size_t size;
+  long long data[];
+};
+```
+
+When we allocate an abstract value with `janet_abstract`, we call `janet_gcalloc` with a size large enough to hold the `JanetAbstractHead` *and* the actual data. There’s no pointer indirection; the backing memory for our type is allocated contiguously after the header.
+
+So when we allocate an abstract type that contains a `JanetTable` struct, we’re basically allocating a struct that looks like this:
+
+```
+struct JanetAbstractTable {
+  JanetGCObject gc;
+  const JanetAbstractType *type;
+  size_t size;
+  JanetTable data;
+};
+```
+
+Which is morally equivalent to writing something like:
+
+```
+struct JanetAbstractTable {
+  JanetGCObject gc;
+  const JanetAbstractType *type;
+  size_t size;
+  JanetGCObject table_gc;
+  int32_t table_count;
+  int32_t table_capacity;
+  int32_t table_deleted;
+  JanetKV *table_data;
+  JanetTable *table_proto;
+};
+```
+
+But note the weirdness: we now have *two* `JanetGCObject` values. One in the abstract header, and one in the table itself. `janet_table_init_raw` initializes all of the *other* fields of a table, but it doesn’t set the `gc` field — it assumes that `janet_gcalloc` already took care of that.
+
+So if we don’t do anything here, our `data.gc` field will be uninitialized. Which doesn’t really matter yet, because nothing is trying to *read* that value: this table was not directly allocated with `janet_gcalloc`, so the Janet garbage collector doesn’t even know that it exists.
+
+But it will start to matter soon, when we try to free the table, because when we free the table it’s going to look in its `JanetGCObject` struct to decide exactly how it needs to free memory.
+
+This is because Janet has a special kind of “fast temporary table” that uses a separate allocator, and the `flags` field of the `JanetGCObject` stores whether or not the table was created as a regular table or a temporary local table. When freeing a table, Janet has to determine if it’s freeing it from the regular heap or from this Janet “scratch space.”
+
+So it’s very important that we initialize the garbage collector field, and it *just so happens* that `0` is the correct value to initialize it to. Which is good, because the other possible garbage collector flag values that we could set are not actually exposed as part of the Janet header… so we’re relying on an implementation detail here. Like I said: the thing we’re doing is weird.
+
+Okay! With that out of the way, we still have to define the abstract type itself — the `set_type` value that I referenced in `cfun_new`. I’m going to define it like this for now:
+
+```
+static const JanetAbstractType set_type = {
+  .name = "set",
+  .gc = set_gc,
+  .gcmark = set_gcmark,
+  .get = NULL,
+  .put = NULL,
+  .marshal = NULL,
+  .unmarshal = NULL,
+  .tostring = set_tostring,
+  .compare = NULL,
+  .hash = NULL,
+  .next = NULL,
+  .call = NULL,
+  .length = NULL,
+  .bytes = NULL,
+};
+```
+
+We’ll add some more functions later on, but we’re starting with the absolute basics.
+
+`set_gc` is the function that Janet will call in order to garbage collect our value; it’s the deinitializer or destructor or whatever you want to call it for this abstract type. Our implementation is very simple:
+
+```
+static int set_gc(void *data, size_t len) {
+  (void) len;
+  janet_table_deinit((JanetTable *)data);
+  return 0;
+}
+```
+
+Even though `len` is an argument to this function, we don’t need to free the memory that we allocated for this abstract value; the garbage collector will do that for us. We only need to free any memory that we allocated in addition to that. The `len` argument is there just in case we allocated memory proportional to our original size — it saves us from having to store that length separately.
+
+In that same vein, `janet_table_deinit` won’t free the actual `JanetTable` struct, only the memory that it allocated itself (the hash buckets). In general, if you’re writing an abstract type that doesn’t dynamically allocate any additional memory, you can just set `.gc = NULL`.
+
+Finally, we return `0` to indicate success, like a process exit code.
+
+Next we need to implement `set_gcmark`. Again, this is very simple:
+
+```
+static int set_gcmark(void *data, size_t len) {
+  (void) len;
+  janet_mark(janet_wrap_table((JanetTable *)data));
+  return 0;
+}
+```
+
+In general `set_gcmark` should loop over any `janet_gcalloc`ated Janet values that this abstract type knows about and call `janet_mark` on them. If the abstract type you’re defining isn’t some kind of container, you probably don’t need to implement this function at all.
+
+Note that we don’t actually *need* to mark the table itself here, as long as we mark all of the values in the table: the table is not known to the garbage collector, as we allocated it as part of our abstract type. But there’s no harm in doing so, and calling `janet_mark` on the whole table is a very convenient way to recursively mark all of the table’s keys and values.
+
+Once again, `return 0;` means that we didn’t encounter any error while trying to mark.
+
+And now we’re basically done! There’s only one more function to implement: `set_tostring`:
+
+```
+static void set_tostring(void *data, JanetBuffer *buffer) {
+  JanetTable *set = (JanetTable *)data;
+  janet_buffer_push_cstring(buffer, "{");
+  int first = 1;
+  for (int32_t i = 0; i < set->capacity; i++) {
+    JanetKV *entry = &ampset->data[i];
+    if (janet_checktype(entry->key, JANET_NIL)) {
+      continue;
+    }
+    if (first) {
+      first = 0;
+    } else {
+      janet_buffer_push_cstring(buffer, " ");
+    }
+    janet_pretty(buffer, 0, 0, entry->key);
+  }
+  janet_buffer_push_cstring(buffer, "}");
+}
+```
+
+Amusingly, this is the most complicated function of all, and it’s just a stupid printer.
+
+Note that because hash tables store keys in a sparse array, we can’t just iterate over the values directly, and instead we have to iterate over every bucket in the table’s `capacity` and skip over the empty ones.
+
+Finally, we have to register the abstract type we declared. This just means adding one additional line to our `_janet_init` function:
+
+```
+JANET_MODULE_ENTRY(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+  janet_register_abstract_type(&ampset_type);
+}
+```
+
+And now we are actually done. Just to recap, the code in its entirety looks like this:
+
+set.c
+
+```
+#include <janet.h>
+
+static int set_gc(void *data, size_t len) {
+  (void) len;
+  janet_table_deinit((JanetTable *)data);
+  return 0;
+}
+
+static int set_gcmark(void *data, size_t len) {
+  (void) len;
+  janet_mark(janet_wrap_table((JanetTable *)data));
+  return 0;
+}
+
+static void set_tostring(void *data, JanetBuffer *buffer) {
+  JanetTable *set = (JanetTable *)data;
+  janet_buffer_push_cstring(buffer, "{");
+  int first = 1;
+  for (int32_t i = 0; i < set->capacity; i++) {
+    JanetKV *entry = &ampset->data[i];
+    if (janet_checktype(entry->key, JANET_NIL)) {
+      continue;
+    }
+    if (first) {
+      first = 0;
+    } else {
+      janet_buffer_push_cstring(buffer, " ");
+    }
+    janet_pretty(buffer, 0, 0, entry->key);
+  }
+  janet_buffer_push_cstring(buffer, "}");
+}
+
+static const JanetAbstractType set_type = {
+  .name = "set",
+  .gc = set_gc,
+  .gcmark = set_gcmark,
+  .get = NULL,
+  .put = NULL,
+  .marshal = NULL,
+  .unmarshal = NULL,
+  .tostring = set_tostring,
+  .compare = NULL,
+  .hash = NULL,
+  .next = NULL,
+  .call = NULL,
+  .length = NULL,
+  .bytes = NULL,
+};
+
+static JanetTable *new_abstract_set() {
+  JanetTable *set = (JanetTable *)janet_abstract(&ampset_type, sizeof(JanetTable));
+  set->gc = (JanetGCObject){0, NULL};
+  janet_table_init_raw(set, argc);
+  return set;
+}
+
+static Janet cfun_new(int32_t argc, Janet *argv) {
+  JanetTable *set = new_abstract_set();
+  for (int32_t i = 0; i < argc; i++) {
+    janet_table_put(set, argv[i], janet_wrap_true());
+  }
+
+  return janet_wrap_abstract(set);
+}
+
+static const JanetReg cfuns[] = {
+  {"new", cfun_new, "(set/new & xs)\n\n"
+    "Returns a set containing only this function's arguments."},
+  {NULL, NULL, NULL}
+};
+
+JANET_MODULE_ENTRY(JanetTable *env) {
+  janet_cfuns(env, "set", cfuns);
+  janet_register_abstract_type(&ampset_type);
+}
+```
+
+It’s a lot of code when we look at it all at once, but each individual piece is pretty simple. And now we finally get to test it out!
+
+jpm -l janet -e '(import set)' -r
+
+```
+repl:1:> (set/new 1 2 3)
+<set {1 2 3}>
+```
+
+Hooray! We wrote an extremely, umm, useless `set` type.
+
+But we can try to make it more useful.
+
+The first thing I want to do is to make it enumerable: I want to be able to loop over it with a normal `each` loop.
+
+So recall, from Chapter Six, the iteration protocol: we need to implement a function called `next` that will return the next *key* in the structure, and we need to implement a function called `get` that will return a value for that key. So in order to implement this, we have to decide: what are the “keys” of a set?
+
+One idea is to have `next` iterate over the keys in our underlying table — the elements in our set — and when we call `get`, to just return the element itself if it exists or `nil` if it doesn’t. Since `nil` cannot be a key of a table (and thus cannot be an element in our set), this happens to work nicely.
+
+This is perfectly reasonable, and we could choose to implement `next` this way, but there’s a small problem with this approach: if we allow arbitrary values to be our keys, we can no longer have our abstract type respond to *methods*.
+
+Of course it’s just fine to say “who cares” and not implement any methods for our set, but that wouldn’t be any fun. I think it would be nice to overload `+` to mean “union” and `-` to mean “difference” and so on, and in order to overload operators like that we’ll need to implement methods.
+
+Implementing a method is pretty simple:
+
+```
+static Janet cfun_union(int32_t argc, Janet *argv);
+static const JanetMethod set_methods[] = {
+  {"+", cfun_union},
+  {NULL, NULL}
+};
+
+static int set_get(void *data, Janet key, Janet *out) {
+  if (!janet_checktype(key, JANET_KEYWORD)) {
+    return 0;
+  }
+  return janet_getmethod(janet_unwrap_keyword(key), set_methods, out);
+}
+
+static const JanetAbstractType set_type = {
+  .name = "set",
+  .gc = set_gc,
+  .gcmark = set_gcmark,
+  .get = set_get,
+  .put = NULL,
+  .marshal = NULL,
+  .unmarshal = NULL,
+  .tostring = set_tostring,
+  .compare = NULL,
+  .hash = NULL,
+  .next = NULL,
+  .call = NULL,
+  .length = NULL,
+  .bytes = NULL,
+};
+```
+
+`set_get` returns an `int`, but in this case it’s a boolean, not an “exit code.” So `0` means that the key was not found, while anything else means that it was. The `janet_getmethod` helper makes it easy to implement this; it does a linear scan through a `NULL`-terminated array of methods and “returns,” via the out parameter, the first one with a matching name.
+
+We’ll need to reference `set_type` from the `cfun_union` implementation, so I forward declare it to implement later on:
+
+```
+static Janet cfun_union(int32_t argc, Janet *argv) {
+  JanetTable *result = new_abstract_set();
+
+  for (int32_t arg_ix = 0; arg_ix < argc; arg_ix++) {
+    JanetTable *arg = (JanetTable *)janet_getabstract(argv, arg_ix, &ampset_type);
+    for (int32_t bucket_ix = 0; bucket_ix < arg->capacity; bucket_ix++) {
+      JanetKV *entry = &amparg->data[bucket_ix];
+      if (janet_checktype(entry->key, JANET_NIL)) {
+        continue;
+      }
+      janet_table_put(result, entry->key, janet_wrap_true());
+    }
+  }
+
+  return janet_wrap_abstract(result);
+}
+```
+
+And now we can recompile this and test it out:
+
+jpm -l janet -e '(import set)' -r
+
+```
+repl:1:> (+ (set/new))
+<set {}>
+repl:2:> (+ (set/new 1 2 3) (set/new 2 3 4))
+<set {1 2 3 4}>
+```
+
+Perfect.
+
+Since there is only one `get` function, and it has to work for both methods and values, there’s a restriction on what we can use as keys for our `next` implementation — if we allow arbitrary keywords to be keys, we won’t be able to implement any methods.
+
+So instead let me propose a different key: the *index of the hash bucket*. It’ll be very fast to look it up, and there’s no chance that we’ll confuse it with a method name… but it will be completely meaningless if we mutate the underlying table during iteration, so we’ll have to make sure not to do that.
+
+This key makes for a very simple implementation of `next`:
+
+```
+static Janet set_next(void *data, Janet key) {
+  int32_t previous_index;
+  if (janet_checktype(key, JANET_NIL)) {
+    previous_index = -1;
+  } else if (janet_checkint(key)) {
+    previous_index = janet_unwrap_integer(key);
+    if (previous_index < 0) {
+      janet_panicf("set key %v cannot be negative", key);
+    }
+  } else {
+    janet_panicf("set key %v must be an integer", key);
+  }
+
+  JanetTable *set = (JanetTable *)data;
+  for (int32_t i = previous_index + 1; i < set->capacity; i++) {
+    if (!janet_checktype(set->data[i].key, JANET_NIL)) {
+      return janet_wrap_integer(i);
+    }
+  }
+  return janet_wrap_nil();
+}
+```
+
+We’re iterating over the buckets in the hash table again, just like we did for `set_tostring`, but this time we return the index of the first or next “full” bucket that we find.
+
+That’s already sufficient to do *something*:
+
+jpm -l janet -e '(import set)' -r
+
+```
+repl:1:> (eachk x (set/new 1 2 3 4 5) (print x))
+0
+1
+2
+4
+8
+nil
+repl:2:> (eachk x (set/new 1 "two" :three 'four) (print x))
+0
+1
+5
+7
+nil
+```
+
+The indexes themselves sort of leak some implementation details of Janet tables, but we’re going to treat them as completely opaque values. A set isn’t actually an indexed structure at all, and using `eachk` or `eachp` with a set is like using it with a generator — the keys just aren’t meaningful.
+
+So let’s extend our `get` implementation to work with these keys, so that we can actually support *useful* iteration:
+
+```
+static int set_get(void *data, Janet key, Janet *out) {
+  if (janet_checkint(key)) {
+    JanetTable *set = (JanetTable *)data;
+    int32_t index = janet_unwrap_integer(key);
+    if (index < 0 || index >= set->capacity) {
+      janet_panicf("set key %v out of bounds (did you mutate during iteration?)", key);
+    }
+    Janet element = set->data[index].key;
+    if (janet_checktype(element, JANET_NIL)) {
+      janet_panicf("set key %v not found (did you mutate during iteration?)", key);
+    }
+    *out = element;
+    return 1;
+  } else if (janet_checktype(key, JANET_KEYWORD)) {
+    return janet_getmethod(janet_unwrap_keyword(key), set_methods, out);
+  } else {
+    return 0;
+  }
+}
+```
+
+We could skip the assertions and return “key not found” for invalid keys, but if you’re ever indexing a set with an invalid key, something has gone horribly wrong, and I think it’s better to fail early.
+
+And now, at long last, we actually have a *useful* set:
+
+jpm -l janet -e '(import set)' -r
+
+```
+repl:1:> (each x (set/new 1 3 1 2 2 1 1) (print x))
+1
+3
+2
+nil
+repl:2:> (map |(* $ 2) (set/new 1 2 3 4 5))
+@[2 4 8 10 6]
+```
+
+I mean, for some definition of useful. We haven’t actually done anything set-related yet, and as the code stands right now we can’t even check for membership. So we still have a little ways to go.
+
+One thing that was nice about our actual-table-as-a-set approach is that we could do a membership check by “invoking” the set:
+
+```
+repl:1:> (def cities-visited @{"LA" true "NYC" true})
+@{"LA" true "NYC" true}
+repl:2:> (cities-visited "LA")
+true
+repl:2:> (cities-visited "Pittsburgh")
+nil
+```
+
+I mean, `true`/`nil` is janky as heck, but it works in most situations.
+
+It would be nice to replicate this with our set type, but by default when we “invoke” an abstract type, it’s the same as calling `get`:
+
+```
+repl:1:> (def cities-visited (set/new "NYC" "LA"))
+<set {"LA" "NYC"}>
+repl:2:> (cities-visited "NYC")
+error: key "NYC" not found in <set {"LA" "NYC"}>
+  in _thunk [repl] (tailcall) on line 2, column 1
+repl:3:> (cities-visited :length)
+<cfunction 0x000104443DBC>
+```
+
+But we can change this by implementing a custom *call* function:
+
+```
+static Janet set_call(void *data, int32_t argc, Janet *argv) {
+  janet_fixarity(argc, 1);
+  JanetTable *set = (JanetTable *)data;
+  Janet value = janet_table_get(set, argv[0]);
+  int key_found = !janet_checktype(value, JANET_NIL);
+  return janet_wrap_boolean(key_found);
+}
+```
+
+And now if we “invoke” our set, it will perform a membership test instead:
+
+```
+repl:1:> (def cities-visited (set/new "NYC" "LA"))
+<set {"LA" "NYC"}>
+repl:2:> (cities-visited "NYC")
+true
+repl:3:> (cities-visited "Pittsburgh")
+false
+```
+
+We now have a pretty thorough set implementation! We’ve put almost everything we can into the abstract type:
+
+```
+static const JanetAbstractType set_type = {
+  .name = "set",
+  .gc = set_gc,
+  .gcmark = set_gcmark,
+  .get = set_get,
+  .put = NULL,
+  .marshal = NULL,
+  .unmarshal = NULL,
+  .tostring = set_tostring,
+  .compare = NULL,
+  .hash = NULL,
+  .next = set_next,
+  .call = set_call,
+  .length = NULL,
+  .bytes = NULL,
+};
+```
+
+`length` is trivial; let’s go ahead and knock that one out:
+
+```
+static size_t set_length(void *data, size_t len) {
+  (void) len;
+  JanetTable *set = (JanetTable *)data;
+  return set->count;
+}
+```
+
+We won’t implement `bytes`; `bytes` only makes sense for abstract types that are string-like or buffer-like. It’s supposed to return a slice of contiguous bytes, and we don’t have any of those.
+
+If we were making an immutable set, we’d want to implement custom `compare` and `hash` functions to make sure that two sets with the same elements are equal to one another and hash to the same value. But for the sake of simplicity, let’s say that we only care about writing a mutable set, and we can just use the default pointer equality when we compare two sets.
+
+Note that if you are implementing a mutable type, there’s no way to overload the behavior of Janet’s `deep=` function. You’ll have to implement a separate function if you want to support deep equality.
+
+I don’t know if we should implement `put`; it seems a bit weird to have an asymmetry between the keys we use for `get` and `put`. But it might be convenient to be able to write `(set (cities-visited "NYC") true)` to add keys and `(set (cities-visited "NYC") false)` to remove them. In any case, we won’t learn anything new by doing that, so let’s skip it for now.
+
+Which just leaves us with the marshaling functions.
+
+Recall from Chapter Two that marshaling means serializing a Janet data structure into a sequence of bytes. When we “compile” a Janet program, we compute the program’s environment table and then marshal that table to disk.
+
+But in order to do that, all of the values in the environment table have to be marshalable. And right now, if we write a simple program like this, we actually have two values in our environment that are *not* marshalable:
+
+```
+(import set)
+
+(def numbers (set/new 1 2 3 4 5))
+
+(defn main [&]
+  (each number numbers
+    (print number)))
+```
+
+The first is, obviously, the set called `numbers`. The second is more subtle: it’s the `cfunction` called `set/new` that we `import`ed.
+
+```
+jpm -l janet -c main.janet main.jimage
+error: no registry value and cannot marshal <cfunction set/new>
+  in marshal [src/core/marsh.c] on line 1480
+  in make-image [boot.janet] on line 2637, column 3
+  in c-switch [boot.janet] (tailcall) on line 3873, column 36
+  in cli-main [boot.janet] on line 3909, column 13
+```
+
+Now, there’s not really any way for Janet to marshal `cfunction`s. You might imagine some kind of serialization of the actual machine code of the native function… but no. That wouldn’t work, and even if it did it wouldn’t be portable.
+
+But it is possible for Janet to safely *skip* marshaling certain `cfunction`s. If Janet knows that the `cfunction` is going to be present in the environment that unmarshals this image, it can just write down an identifier for the `cfunction` and trust that the unmarshaling code will know how to match that identifier up to the actual correct `cfunction` later on. (This is the “registry value” that the error message is referring to.)
+
+This is why you can have built-in `cfunctions` in your environment and marshal them just fine. You won’t get an error trying to marshal this file’s environment:
+
+```
+(def is-integer? int?)
+```
+
+Even though `int?` is a `cfunction`.
+
+Now, when we use `jpm` to build an executable that references our native set library, `jpm` will take care of automatically skipping all of the `cfunction`s exposed by any native modules that the executable depends on, so we generally won’t have to think about this at all.
+
+And we *could* manually alter the `make-image-dict` so that we could marshal a “raw” image without using `jpm` to compile it all the way to a native executable, and then very carefully unmarshal that image later… but we’re not going to do that.
+
+But even if we use `jpm` to compile this, we still won’t be able to marshal the resulting image, because our set is not marshalable yet. But let’s try it anyway. I’m going to add an executable with a native dependency:
+
+project.janet
+
+```
+(declare-project :name "set")
+
+(def native-module
+  (declare-native
+    :name "set"
+    :source ["set.c"]))
+
+(declare-executable
+  :name "main"
+  :entry "main.janet"
+  :deps [(native-module :static)])
+```
+
+And then I’m going to alter the way that we import the native module:
+
+main.janet
+
+```
+(import /build/set)
+
+(def cities-visited (set/new "NYC" "LA"))
+
+(defn main [&]
+  (print (cities-visited "LA")))
+```
+
+Because we’re depending on a native library declared in the same project, we can’t `install` it before we run this script, so we can’t `(import set)` anymore. Instead we have to `(import /build/set)`. This is the real actual right way to do this, although I agree that it is very gross.
+
+Now if we try to compile this executable:
+
+```
+jpm -l build
+generating executable c source build/main.c from main.janet...
+found native build/set.so...
+error: cannot marshal <set {"LA" "NYC"}>
+```
+
+We get an error, as expected. So we’re going to need to implement marshaling functions for our abstract set type.
+
+Now, we could just defer to Janet’s existing table marshaling functions, and write these as one liners. But we’re not going to do that for three reasons:
+
+* It won’t teach us anything about how to write marshaling functions in general.
+* It will include redundant data in the image, since we know that all the values in the table are `true`.
+* When we unmarshal a table, Janet is going to allocate the memory for that table as a normal garbage-collected value, and we won’t be able to safely copy its contents into the address that Janet allocated for the abstract value itself. We’d have to manually remove the allocated block from the Janet garbage collector’s list of allocated nodes without actually freeing its associated memory, and Janet doesn’t expose any way for us to do that.
+
+In any case, writing custom marshaling functions is very easy:
+
+```
+static void set_marshal(void *data, JanetMarshalContext *ctx) {
+  janet_marshal_abstract(ctx, data);
+  JanetTable *set = (JanetTable *)data;
+  janet_marshal_int(ctx, set->count);
+  for (int32_t i = 0; i < set->capacity; i++) {
+    Janet element = set->data[i].key;
+    if (!janet_checktype(element, JANET_NIL)) {
+      janet_marshal_janet(ctx, element);
+    }
+  }
+}
+```
+
+We write down the number of elements in the table, then we write down each element.
+
+Unmarshaling is just the reverse of that:
+
+```
+static void *set_unmarshal(JanetMarshalContext *ctx) {
+  JanetTable *set = (JanetTable *)janet_unmarshal_abstract(ctx, sizeof(JanetTable));
+  set->gc = (JanetGCObject){0, NULL};
+  janet_table_init_raw(set, 0);
+  int32_t length = janet_unmarshal_int(ctx);
+  for (int32_t i = 0; i < length; i++) {
+    janet_table_put(set, janet_unmarshal_janet(ctx), janet_wrap_true());
+  }
+  return set;
+}
+```
+
+Although we do have to remember to zero out the `set->gc` fields again.
+
+And now we have a *pretty good* set type. We can even compile and run a native executable that includes a marshaled set in its image:
+
+main.janet
+
+```
+(import /build/set)
+
+(def cities-visited (set/new "NYC" "LA"))
+
+(defn main [&]
+  (print (cities-visited "LA")))
+
+jpm -l build && build/main
+true
+```
+
+And we are done implementing functions for the abstract type protocol. Which means that we can start to write some functions for ourselves! We’ve done the busy work, and now we can start to have some fun.
+
+For starters, we don’t have any way to *change* the set. We should start by implementing some basic functionality, like `add` and `remove`:
+
+```
+static Janet cfun_add(int32_t argc, Janet *argv) {
+  janet_arity(argc, 1, -1);
+  JanetTable *set = (JanetTable *)janet_getabstract(argv, 0, &ampset_type);
+  for (int32_t i = 1; i < argc; i++) {
+    janet_table_put(set, argv[i], janet_wrap_true());
+  }
+  return janet_wrap_nil();
+}
+
+static Janet cfun_remove(int32_t argc, Janet *argv) {
+  janet_arity(argc, 1, -1);
+  JanetTable *set = (JanetTable *)janet_getabstract(argv, 0, &ampset_type);
+  for (int32_t i = 1; i < argc; i++) {
+    janet_table_remove(set, argv[i]);
+  }
+  return janet_wrap_nil();
+}
+```
+
+And next we should probably implement the rest of the set-like functions, like `intersect` and `subtract`.
+
+But you know what? I’m kind of tired of writing C code. And if we’re going to write a full set API here, it would be nice if we could implement some of the higher-level helpers in Janet code.
+
+And of course it’s easy to do this in our little `main` executable… we can just write helpers. But if we want to make a set *library* that can be used by other people we’ll need to figure out how to mix and match native modules with pure Janet code.
+
+And there are three ways that we could do that:
+
+* Embed Janet source code into our native module and execute it during `janet_init`.
+
+  `jpm` actually does have helpers for embedding Janet source code into native modules, but only source code. This means that we’d have to parse, macroexpand, compile, and finally compute the environment in our `_janet_init` function at load time, instead of compiling it into an image ahead of time. This is a little weird to me, because I’m used to thinking of macros as “free” — they execute at compile time — but if we do this, suddenly we’ll have to pay for macro-expansion during program startup.
+
+  But, you know, computers are fast, and Janet compiles quickly… it’s unlikely that this would actually effect any noticeable startup latency. It just *feels* wrong to me.
+
+* Compile a Janet image ahead of time, embed the image into our native module, and then execute it during `_janet_init`.
+
+  This is *possible*, but it’s a fair bit of work to avoid a circular dependency between your native module and your Janet code, and we’re not going to spend any time on it in this book.
+
+* Write a native Janet module that imports and re-exports the environment of a private native module, then `declare-source` it in our `project.janet`.
+
+I think this is the easiest thing to do, but note that we will no longer be able to mix and match an executable with a library written in this way.
+
+For a really dumb reason: in order to refer to a locally built native module from an executable, you need to use something like `(import /build/set)`, while to import an installed native module you need to use `(import set)`. You can sort of hack this by symlinking your `jpm_tree/lib` to the `build/` directory but… is it worth it?
+
+Here’s a template for such a module:
+
+project.janet
+
+```
+(declare-project
+  :name "set")
+
+(declare-native
+  :name "set/native"
+  :source ["set.c"])
+
+(declare-source
+  :source "init.janet"
+  :prefix "set/")
+```
+
+Note that we have to rename the native module so that `(import set)` will import our pure Janet module instead:
+
+init.janet
+
+```
+(import set/native :as set)
+
+(defn intersection [set1 set2]
+  (def new-set (set/new))
+  (each element set1
+    (if (set2 element)
+      (set/add new-set element)))
+  new-set)
+
+(import set/native :prefix "" :export true)
+```
+
+Importing it twice like that is purely a stylistic choice; if you’re okay working with unqualified names like `new` and `add` you can just `(import set/native :prefix "" :export true)` at the top of the file.
+
+Now if we add this as a dependency to another project, we’ll wind up with something that looks like this:
+
+```
+tree jpm_tree
+jpm_tree
+├── bin
+├── lib
+│   └── set
+│       ├── init.janet
+│       ├── native.a
+│       ├── native.meta.janet
+│       └── native.so
+└── man
+```
+
+And when we `(import set)`, it will import our `set/init.janet module` that re-exports the `set/native` module.
+
+Okay! That’s just about everything you need to know about Janet’s foreign function interface. We learned how to create an abstract type, and we learned how to call into C code from Janet. But, umm… we didn’t really do anything *foreign*, did we?
+
+Usually you’ll create abstract types and write native modules in order to interoperate with existing C libraries, like sqlite or libcurl. And if you think about it, we *sort of* did that, except that our “existing library” was just the Janet C API.
+
+=> https://github.com/janet-lang/sqlite3 sqlite
+=> https://curl.se/libcurl/ libcurl
+
+But this allowed us to skip over something very important: we haven’t talked about how to link in code from actual external libraries. And I don’t want you to leave this chapter feeling cheated, so we’re going to do one more thing before we go.
+
+There’s an open-source library called immer that provides persistent, immutable data structures in C++. I’ve never used it before, but I think it looks pretty neat, and it includes a set type. So let’s write bindings for it!
+
+=> https://github.com/arximboldi/immer immer
+
+Except… we’re not going to do that together. It’s so similar to what we already did that we’d just be rehashing all of the exact same ground, so instead we’re just going to talk about the differences.
+
+First off, we declare the project like this:
+
+project.janet
+
+```
+(declare-project :name "jimmy")
+
+(declare-native
+  :name "jimmy/native"
+  :source ["src/jimmy.cpp"]
+  :cppflags ["-Iimmer" "-std=c++14"])
+
+(declare-source
+  :source [
+    "src/set.janet"
+    "src/init.janet"
+  ]
+  :prefix "jimmy")
+```
+
+And then… that’s it. That’s the only difference. Everything else is exactly the same. `jpm` detects that we’re using C++ by the file extension, and produces static and dynamic native modules that each statically link the `immer` library that I vendored as a git submodule (which `jpm` will automatically fetch).
+
+We’re not going to walk through the code together, but the code is out there for you to peruse at your leisure, in case you ever find yourself wanting to interoperate with a C++ API. It might be useful to see the directory structure `jpm` expects in order for you to be able to distribute a library with nested submodules and native components.
+
+=> https://github.com/ianthehenry/jimmy the code is out there for you to peruse at your leisure
+
+=> chapter-10.gmi Chapter Ten: Embedding Janet →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
+
