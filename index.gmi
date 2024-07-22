@@ -1,4 +1,6 @@
-# Librarium
+# Cukta te kabri
+
+=> djvu/index.gmi djvu
 
 => en/index.gmi Books in English
 => ru/index.gmi Книги на русском
