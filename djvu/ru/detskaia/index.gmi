@@ -1,3 +1,29 @@
 # Детская литература
 
 => neznaika/index.gmi Приключения Незнайки
+
+=> geraskina--v_strane_nevyuchennykh_urokov.djvu Гераскина Лия. В стране невыученных уроков
+=> dragunskii--dvadtsat_let_pod_krovatiu.djvu Драгунский Виктор. Двадцать лет под кроватью
+=> druzhkov--prikliucheniia_karandasha_i_samodelkina.djvu Дружков Юрий. Приключения Карандаша и Самоделкина
+=> druzhkov--volshebnaia_shkola.djvu Дружков Юрий. Волшебная школа
+=> kataev--beleet_parus_odinokii.djvu Катаев Валентин. Белеет парус одинокий
+=> korshunov--shkolnaia_vselennaia.djvu Коршунов Михаил. Школьная вселенная
+=> krylov--basni.djvu Крылов Иван. Басни
+=> lagin--starik_khottabych.djvu Лагин Лазарь. Старик Хоттабыч
+=> mihkalkov--lev_i_iarlyk.djvu Михалков Сергей. Лев и ярлык
+=> mihkalkov--prazdnik_neposlushaniia.djvu Михалков Сергей. Праздник непослушания
+=> mihkalkov--tridtsat_shest_i_piat.djvu Михалков Сергей. Тридцать шесть и пять
+=> nekrasov--prikliucheniia_kapitana_vrungelia.djvu Некрасов Андрей. Приключения капитана Врунгеля
+=> nosov--bobik_v_gostiakh_u_barbosa.djvu Носов Николай. Бобик в гостях у Барбоса
+=> nosov--vintik_shpuntik_i_pylesos.djvu Носов Николай. Винтик, Шпунтик и пылесос
+=> nosov--vitia_maleev_v_shkole_i_doma.djvu Носов Николай. Витя Малеев в школе и дома
+=> nosov--zhivaia_shliapa.djvu Носов Николай. Живая шляпа
+=> nosov--kogda_my_smeemsia.djvu Носов Николай. Когда мы смеемся
+=> nosov--fantazery.djvu Носов Николай. Фантазеры
+=> nosov--shurik_u_dedushki.djvu Носов Николай. Шурик у дедушки
+=> prishvin--kladovaia_solntsa.djvu Пришвин Михаил. Кладовая Солнца
+=> prokofieva--skazka_o_lenivoi_devochke_mashe.djvu Прокофьева Софья. Сказка о ленивой девочке Маше
+=> rodari--prikliucheniia_chipollino.djvu Родари Джанни. Приключения Чиполлино
+=> romanchenko--volshebnye_kraski.djvu Романченко Олег. Волшебные краски
+=> uspenskii--mekhovoi_internat.djvu Успенский Эдуард. Меховой интернат
+=> iakhnin--ploshchad_kartonnykh_chasov.djvu Яхнин Леонид. Площадь картонных часов

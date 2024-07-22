@@ -1,0 +1,57 @@
+# Малыши
+
+=> vera_i_anfisa/index.gmi Вера и Анфиса
+
+=> aleksandrova--moi_mishka.djvu Александрова Зинаида. Мой мишка
+=> andersen--ognivo.djvu Андерсен Ганс-Христиан. Огниво
+=> barto--bylo_u_babushki_40_vnuchat.djvu Барто Агния. Было у бабушки сорок внучат
+=> barto--dom_pereekhal.djvu Барто Агния. Дом переехал
+=> barto--medvezhonok_nevezha.djvu Барто Агния. Мервежонок-невежа
+=> barto--ne_odna.djvu Барто Агния. Не одна
+=> barto--snegir.djvu Барто Агния. Снегирь
+=> belozerov--lesnoi_plakunchik.djvu Белозеров Тимофей. Лесной плакунчик
+=> bianki--plavunchik.djvu Бианки Виталий. Плавунчик
+=> bianki--chei_nos_luchshe.djvu Бианки Виталий. Чей нос лучше
+=> bulatov--masha_i_medved.djvu Булатов Михаил. Маша и медведь
+=> gribova--letela_sova_veselaia_golova.djvu Грибова Людмила. Летела сова - веселая голова
+=> zolotukhina--kruglyi_god_veselyi_god.djvu Золотухина Татьяна. Круглый год - веселый год
+=> kuzmin--dobryi_den.djvu Кузьмин Лев. Добрый день 
+=> kuzmin--zvezdochety.djvu Кузьмин Лев. Звездочеты
+=> liubimtseva--kak_luchshe.djvu Любимцева Юлия. Как лучше
+=> marshak--usatyi_polosatyi.djvu Маршак Самуил. Усатый-полосатый
+=> mihkalkov--veselye_zaicy.djvu Михалков Сергей. Веселые зайцы
+=> mihkalkov--diadia_stepa.djvu Михалков Сергей. Дядя Степа
+=> mikhalkov--zaika_zaznaika.djvu Михалков Сергей. Зайка-Зазнайка
+=> mikhalkov--kak_medved_trubku_nashel.djvu Михалков Сергей. Как медведь трубку нашел
+=> mihkalkov--tri_porosenka.djvu Михалков Сергей. Три поросенка
+=> mikhalkov--upriamyi_liagushonok.djvu Михалков Сергей. Упрямый лягушонок
+=> mikhalkov--shchenok.djvu Михалков Сергей. Щенок
+=> muur--kroshka_enot.djvu Муур Лилиан. Крошка Енот и тот, кто сидит в пруду
+=> pliatskovskii--ot_ulybki_khmuryi_den_svetlei.djvu Пляцковский Михаил. От улыбки хмурый день светлей
+=> pliatskovskii--solyshko_na_pamiat.djvu Пляцковский Михаил. Солнышко на память
+=> pliatskovskii--ia_na_oblake_letal.djvu Пляцковский Михаил. Я на облаке летал
+=> pogorelovskii--neobyknovennyi_pozhar.djvu Погореловский Сергей. Необыкновенный пожар
+=> stelmakh--gusak_fizkulturnik.djvu Стельмах Михайло. Гусак-физкультурник
+=> suteev--dve_skazki_pro_karandash_i_kraski.djvu Сутеев Владимир. Две сказки про карандаш и краски
+=> suteev--elka.djvu Сутеев Владимир. Елка
+=> suteev--korablik.djvu Сутеев Владимир. Кораблик
+=> suteev--kto_skazal_miau.djvu Сутеев Владимир. Кто сказал "мяу"?
+=> suteev--meshok_iablok.djvu Сутеев Владимир. Мешок яблок
+=> suteev--petukh_i_kraski.djvu Сутеев Владимир. Петух и краски
+=> suteev--pod_gribom.djvu Сутеев Владимир. Под грибом
+=> suteev--cyplenok_i_utenok.djvu Сутеев Владимир. Цыпленок и утенок
+=> tokmakova--alia_kliaksich_i_bukva_a.djvu Токмакова Ирина. Аля, Кляксич и буква А
+=> tolstoi--kak_lisa_uchilas_letat.djvu Толстой Алексей. Как лиса училась летать
+=> tolstoi--kolobok.djvu Толстой Алексей. Колобок
+=> tolstoi--lisa_i_volk.djvu Толстой Алексей. Лиса и волк
+=> tolstoi--muzhik_i_medved.djvu Толстой Алексей. Мужик и медведь
+=> uspenskii--vniz_po_volshebnoi_reke.djvu Успенский Эдуард. Вниз по волшебной реке
+=> harris--prodelki_brattsa_krolika.djvu Харрис Джоэль. Проделки Братца Кролика
+=> chukovskii--zagadki.djvu Чуковский Корней. Загадки
+=> chukovskii--aibolit.djvu Чуковский Корней. Айболит
+=> chukovskii--doktor_aibolit.djvu Чуковский Корней. Доктор Айболит
+=> chukovskii--kotausi_i_mausi.djvu Чуковский Корней. Котауси и Мауси
+=> chukovskii--moidodyr.djvu Чуковский Корней. Мойдодыр
+=> chukovskii--telefon.djvu Чуковский Корней. Телефон
+=> chukovskii--fedorino_gore.djvu Чуковский Корней. Федорино горе
+

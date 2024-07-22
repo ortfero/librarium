@@ -1,3 +1,4 @@
 # Куча книг
 
 => detskaia/index.gmi Детская литература
+=> malyshi/index.gmi Малыши
