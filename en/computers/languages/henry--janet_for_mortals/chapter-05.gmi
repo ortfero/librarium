@@ -1,0 +1,891 @@
+# Janet for Mortals
+
+## Chapter Fibe: Concurrency and Coroutines
+
+It’s because this is a chapter about fibers.
+
+JavaScript doesn’t have fibers, so I’m going to pretend like you’ve never heard of them before, even though you might be familiar with them from another language already.
+
+The word “fiber” is a cute play on “thread:” a fiber is a lot like a thread, but it’s smaller and lighter. And a thread is a lot like a string, except— wait, no. That’s not right.
+
+We could try to compare threads and fibers and talk about how a fiber is essentially lightweight cooperatively scheduled thread, but I don’t think that provides any useful intuition. If you’re programming with threads, you’re doing it because you have no other choice: your performance constraints require it. If you’re programming with fibers, you’re probably doing it because it’s fun and pleasant and it makes your code easier to read.
+
+So let’s instead approach fibers from first principles. Let’s not think about threads or concurrency at all; let’s just get a hold of a fiber and see how it feels.
+
+fiber.janet
+
+```
+(defn print-something []
+  (print "something"))
+
+(def fiber (fiber/new print-something))
+
+janet fiber.janet
+```
+
+Okay, nothing happened.
+
+We created a fiber by giving it a function, but it didn’t call the function. Or really: it didn’t call the function *yet*. It will call the function as soon as we ask it to:
+
+fiber.janet
+
+```
+(defn print-something []
+  (print "something"))
+
+(def fiber (fiber/new print-something))
+(resume fiber)
+
+janet fiber.janet
+something
+```
+
+There it is.
+
+Now this is obviously boring, so let’s make it slightly more interesting:
+
+fiber.janet
+
+```
+(defn range [count]
+  (for i 0 count
+    (yield i))
+  "done")
+
+(def fiber (fiber/new (fn [] (range 5))))
+
+(print (resume fiber))
+(print (resume fiber))
+(print (resume fiber))
+(print (resume fiber))
+(print (resume fiber))
+(print (resume fiber))
+(print (resume fiber))
+
+janet fiber.janet
+0
+1
+2
+3
+4
+done
+error: cannot resume fiber with status :dead
+  in _thunk [fiber.janet] (tailcall) on line 16, column 8
+```
+
+Alright. So hopefully this isn’t too weird; this is exactly like the following generator in JavaScript:
+
+```
+function* range(count) {
+  for (let i = 0; i < count; i++) {
+    yield i;
+  }
+  return "done";
+}
+```
+
+Except that Janet throws an error if we try to `resume` a fiber that has already returned, while JavaScript just gives you `undefined` if you call `.next()` on a completed generator.
+
+Fibers are iterable in Janet — just like generators are iterable in JavaScript — so we’d probably write something like this instead:
+
+```
+(defn range [count]
+  (for i 0 count
+    (yield i))
+  "done")
+
+(def fiber (fiber/new (fn [] (range 5))))
+
+(each value fiber
+  (print value))
+```
+
+Which prints `0` through `4`, but ignores the final return value.
+
+There’s an important difference between Janet generators and JavaScript generators, though:
+
+```
+(defn yield-twice [x]
+  (yield x)
+  (yield x))
+
+(defn double-range [count]
+  (for i 0 count
+    (yield-twice i)))
+
+(def fiber (fiber/new (fn [] (double-range 5))))
+
+(each value fiber
+  (print value))
+
+janet fibers.janet
+0
+0
+1
+1
+2
+2
+3
+3
+4
+4
+```
+
+You can’t do that in JavaScript, because in JavaScript a generator is “scoped” to a single function. You can’t `yield` from a regular function and expect it to “know” that you were calling it from a generator function.
+
+JavaScript *does* have a way to yield all of the values from another generator:
+
+```
+function* yieldTwice(x) {
+  yield x;
+  yield x;
+}
+
+function* range(count) {
+  for (let i = 0; i < count; i++) {
+    yield* yieldTwice(i);
+  }
+}
+```
+
+But this is essentially just syntax sugar for iterating over the generator returned by `yieldTwice` and yielding all of its values.
+
+In Janet, though, `yield` does not return control from a *function*. It returns control from a *fiber*. And a fiber has a whole call stack of its very own, so when you call `yield`, it might have to jump “up” several stack frames at once to yield the value back to the place that called `resume`.
+
+Except, really, you aren’t jumping *up* the stack. You’re jumping *across*, to a different stack. The call stack that you yielded from is still there, in all of its glory, and you can always jump back over to it by calling `resume` again.
+
+But there’s something else that you can do to *actually* jump up and unwind the fiber’s call stack: you can raise an exception.
+
+fiberror.janet
+
+```
+(defn do-your-best []
+  (error "oh no"))
+
+(defn believe-in-yourself []
+  (while true
+    (do-your-best)))
+
+(def fiber (fiber/new believe-in-yourself))
+
+(resume fiber)
+
+janet fiberror.janet
+error: oh no
+  in do-your-best [fiberror.janet] on line 2, column 3
+  in believe-in-yourself [fiberror.janet] on line 6, column 5
+  in _thunk [fiberror.janet] (tailcall) on line 10, column 1
+```
+
+Okay, so, that’s probably what you expected. We raised an exception; we got an error.
+
+But an exception doesn’t *have* to propagate all the way up to the root of our program. We can create fibers that intercept exceptions for us:
+
+fiber-caught.janet
+
+```
+(defn do-your-best []
+  (error "oh no"))
+
+(defn believe-in-yourself []
+  (while true
+    (do-your-best)))
+
+(def fiber (fiber/new believe-in-yourself :e))
+
+(resume fiber)
+```
+
+The only difference is that I added the `:e` argument to the `fiber/new` call. And now it seems like nothing happens:
+
+```
+janet fiberror-caught.janet
+```
+
+But, in fact, something did happen. Rather than returning a yielded value, the `resume` call actually returned the error. We just didn’t print it:
+
+janet -l ./fiberror-caught
+
+```
+repl:1:> (def fiber (fiber/new believe-in-yourself :e))
+<fiber 0x6000039234F0>
+repl:2:> (resume fiber)
+"oh no"
+```
+
+But wait a minute. How do we know that that’s an error? That’s just a string. What if it yielded that value? Or just returned it?
+
+```
+repl:3:> (fiber/status fiber)
+:error
+```
+
+Oh, I see.
+
+So: the `:e` argument means that this fiber will, for lack of a better word, “catch” any errors thrown by the functions that it runs. It essentially acts like a barrier on the call stack: exceptions can get as far as the last call to `resume`, but no further.
+
+Now this would be a pretty verbose way to program with exceptions, so Janet provides a macro called `try` that provides a familiar try-catch interface for creating fibers like this.
+
+```
+repl:4:> (try (do-your-best) ([e] (print e)))
+oh no
+```
+
+It’s a little… weird-looking, I think. `try` takes two arguments: an expression to evaluate, and then a “catch” section, which is wrapped in parentheses and starts with a binding list.
+
+But we can look at the expansion to see that this macro creates a fiber, resumes it, and then checks its status. In fact, we can even get the underlying fiber that it creates by adding a second identifier (`fib`) to the “catch” binding clause, which we could then use to print a stacktrace of the fiber at the time of the error:
+
+```
+repl:5:> (macex1 '(try (do-your-best) ([e fib] (debug/stacktrace fib e ""))))
+(let [_000000 (<cfunction fiber/new> (fn [] (do-your-best)) :ie)
+      _000001 (<function resume> _000000)]
+  (if (<function => (<cfunction fiber/status> _000000) :error)
+    (do
+      (def e _000001)
+      (def fib _000000)
+      (debug/stacktrace fib e ""))
+    _000001))
+```
+
+That `<function =>` bit means `(= (...) :error)`. I point this out because my brain parses `=>` as its own token.
+
+We’ll talk about those weird `_00000` identifiers in Chapter Thirteen.
+
+Annoyingly, we also have to pass the empty string to `debug/stacktrace` in order to get it to do the thing that we want. This argument is the “prefix” to print before the error line, and even though it’s an optional argument, if we omit it our error won’t show up at all.
+
+Note that this actually passes `:ie` instead of just `:e`. `:i` means “inherit the current environment” — an environment, if you recall from chapter two, is the table of top-level bindings, but actually every fiber has its own environment. We’ll talk more about fiber environments later in this very chapter.
+
+Okay. So if you’re paying too much attention, you might be concerned. We’ve already seen that we create fibers to yield from them, as a way to make our own generators. But we *also* create fibers every time we want to catch an exception. But what if we’re doing both?
+
+```
+(defn yield-dangerously [x]
+  (if (< (math/random) 0.9)
+    (yield x)
+    (error "only way to live")))
+
+(defn generate-safely [count]
+  (for i 0 count
+    (try
+      (yield-dangerously i)
+    ([e]
+      (print "saved it")))
+    (++ i)))
+
+(def fiber (fiber/new (fn [] (generate-safely 5))))
+
+(each value fiber
+  (print value))
+```
+
+When we invoke `yield-dangerously`, it’s actually nested inside two fibers (well, three, if you count the top-level fiber that our code begins in). `try` creates a fiber, and we want that fiber to catch errors. But we learned previously that `yield` will yield to the parent fiber! So this would mean that this doesn’t work, right?
+
+Well, fortunately, that is not the case. It works fine. The fiber that `try` creates will let `yield`s just pass through to its parents — just like the fiber for the generator will allow exceptions to pass through to the top-level fiber.
+
+This all comes down to the fiber’s “signal mask:” when you call `fiber/new`, the default “signal mask” is `:y`, for `yield`. This means that the fiber “intercepts” `yield` calls and prevents them from propagating to the parent fiber. But when we just pass `:e`, our fiber no longer intercepts `yield`s. It intercepts exceptions instead.
+
+You *can* pass `:ye`, if you want to, to intercept both “signals”. But I don’t know why you would want to do that.
+
+Yield and error aren’t the only “signals” that fibers know about. There’s also a `debug` signal, which we’ll talk about in Chapter Eleven — it jumps “up the stack” to an interactive debugger, if you have one running. `:yield`, `:error`, and `:debug` are the only named signals, but there are also ten numbered “user” signals that you can intercept with flags `:0` through `:9`.
+
+”User signal” is sort of a misnomer, because they aren’t actually reserved for *you*, the user. They’re just extra, numbered signals, and the Janet standard library ascribes its own meaning to some of them: it provides an “early return” macro that raises a “user signal 0” to exit from the current fiber, and “user signal 9” is an important part of its asynchrony story. Meanwhile “user signal 8” is how you interrupt one fiber from another fiber.
+
+Janet does not make any officially documented guarantees about which signals are used by the standard library now or which signals may be used by the standard library at some point in the future — I only know that those signals are “reserved” because I have read the Janet source code. This means that I can’t give any concrete advice about which user signals are safe for you to use to implement your own control flow.
+
+Also, not all user signals are created equally. You cannot `resume` a fiber that raises user signals 0 to 4 inclusive, but you can `resume` a fiber that raises user signals 5 to 9 inclusive. This places an additional limit on which user signals you physically can use depending on the type of thing you’re doing with them.
+
+Okay. Fibers. So one way to think about fibers is that they give you a way to put “labels” in your call stack, and then to say things like “jump up to the nearest point in the call stack labeled `:e`.” And they’re also first-class values that you can pass around and `resume` in order to jump arbitrarily deep into a suspended call stack.
+
+But enough about what fibers *are*. Let’s switch gears, and talk about why we would actually want to use fibers when we’re programming.
+
+So we saw `try` already — that’s a pretty big one. That’s useful. And we saw generators.
+
+And generators are useful too! You can use them to generate ad-hoc sequences or elegantly traverse trees or lazily process complex data pipelines with better cache coherency and fewer intermediate allocations than Janet’s normal `map` and `filter` and `reduce` would give you.
+
+In fact, there’s even a nice shorthand for declaring ad-hoc generators without having to go through `fiber/new`: `coro`.
+
+```
+(def fiber (coro
+  (for i 0 5
+    (yield i))))
+
+(each value fiber
+  (print value))
+```
+
+It’s called `coro` because, well, Janet fibers are more than just generators. They’re actually full *coroutines*.
+
+”Coroutine” is a fancy word, but it’s *basically* the same as a generator. To use JavaScript notation for a minute: you make a generator with `f(...args)`, and then you extract elements from it by calling `.next()`. You make a coroutine with `f(...args)` and then you extract elements from it by calling `.next(arg)`.
+
+Note that JavaScript “generators” are actually full coroutines as well, although all `function*` invocations produce an object called a `Generator`. Even though it’s a coroutine. According to *The Encyclopedia of Computer Science*, generators are sometimes called “semicoroutines,” although I have never heard anyone say that in real life.
+
+The only difference between a generator and a coroutine is that the code that “consumes” or “uses” or “drives” or “schedules” or “iterates over” a coroutine doesn’t just say “give me your next value.” It says “here’s a value for you, now give me your next value.” It’s kind of like a generator whose behavior can be guided by the code iterating over it.
+
+But in practice, you don’t use coroutines like generators at all! Generators are used as a lightweight way to interleave control flow between multiple unrelated functions, while coroutines are almost exclusively used as a way to interleave long-running side effectful operations into code without blocking your entire program.
+
+In JavaScript, you usually use a different syntax called `async`/`await` when you’re writing this type of coroutine. `async`/`await` effectively creates a `function*` coroutine that only yields promises, and resumes it every time a promise completes. It’s a slightly less general — but much more convenient — interface for this most common of coroutine use cases.
+
+Janet also special-cases this type of coroutine. When you’re programming asynchronously, you create fibers that you do not explicitly `yield` from, and that you do not explicitly `resume` elsewhere in your code. Instead, you hand the fiber to Janet, and then as your fiber executes it will implicitly yield when you invoke certain functions, and Janet — the Janet runtime, or, more specifically the Janet “event loop” — will resume your fiber in the future once it figures out the result.
+
+The Janet “event loop” is a little scheduler that exists in the background of the Janet runtime. When you call functions that might take a long time to complete (like reading bytes from a socket), your program will actually “yield to the event loop.” Concretely this means that it raises a “user signal 9,” which will (probably) not be caught until it reaches the top-level of the Janet runtime, at which point Janet will start performing the effect you requested and then resume your fiber once it completes.
+
+We’ll use the function `ev/sleep` to demonstrate how this works (`ev` means “event loop”):
+
+event-loop.janet
+
+```
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+janet event-loop.janet
+hello
+goodbye
+```
+
+Oh. Right. I forgot that this is a book, so you can’t actually perceive the passage of time.
+
+But, well, imagine the `hello` appearing, and then a one second pause, and then the `goodbye` appearing after that. It’s… it’s what you expect.
+
+Here, let’s try to visualize the passage of time for you. We’ll print a `.` every 100 milliseconds.
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (while true
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (ev/sleep 0.1)))
+
+(visualize-time)
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+janet event-loop.janet
+..................^C
+```
+
+Well, of course this just prints `.` forever, because I put the main fiber into an infinite loop. But that’s not really what I wanted: what I wanted was to run `visualize-time` in the background. To schedule it to run only when the main fiber is waiting for its asynchronous `ev/sleep` to complete.
+
+To do that, we can use `ev/call` to both create a new fiber and to schedule that fiber to be resumed as soon as the main fiber yields to the event loop. Which it does as soon as we run `ev/sleep`:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (while true
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (ev/sleep 0.1)))
+
+(ev/call visualize-time)
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+janet event-loop.janet
+hello
+..........goodbye
+......................^C
+```
+
+Great. Except that, well, the program runs forever, because `visualize-time` just loops indefinitely. We’ll have to interrupt it to get our program to complete gracefully:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (while true
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (ev/sleep 0.1)))
+
+(def background-fiber (ev/call visualize-time))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/cancel background-fiber "interruption")
+
+janet event-loop.janet
+hello
+..........goodbye
+error: interruption
+  in ev/sleep [src/core/ev.c] on line 2928
+  in visualize-time [event-loop.janet] (tailcall) on line 5, column 4
+```
+
+Oh, gross. Now it printed an error. That’s not really what we wanted. Why did that happen?
+
+Let’s make the control flow a little more explicit:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (while true
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (ev/sleep 0.1)))
+
+(def background-fiber (ev/call visualize-time))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/cancel background-fiber "interruption")
+
+(print)
+(print "The main fiber is still running!")
+(print "But as soon as our background task")
+(print "resumes, it will immediately raise an")
+(print "error. Like this:")
+(print)
+(ev/sleep 0)
+(print)
+(print "And we're back to the main fiber.")
+(print "Let's check on our background fiber:")
+(print)
+(print "status: " (fiber/status background-fiber))
+(print "value: " (fiber/last-value background-fiber))
+
+janet event-loop.janet
+hello
+..........goodbye
+
+The main fiber is still running!
+But as soon as our background task
+resumes, it will immediately raise an
+error. Like this:
+
+error: interruption
+  in ev/sleep [src/core/ev.c] on line 2928
+  in visualize-time [event-loop.janet] (tailcall) on line 5, column 5
+
+And we're back to the main fiber.
+Let's check on our background fiber:
+
+status: error
+value: interruption
+```
+
+Neat. Okay. So we sort of canceled the task *loudly* and *violently*, by forcing it to raise an exception that propagated all the way to the top level. But if we want to silently stop this background task, we can instead catch the exception:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (var stopped false)
+  (while (not stopped)
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (try
+      (ev/sleep 0.1)
+      ([error try-catch-fiber]
+        (if (= error :stop)
+          # gracefully handle the expected "exception"
+          (set stopped true)
+          # re-raise any unexpected exceptions
+          (propagate error try-catch-fiber))))))
+
+(def background-fiber (ev/call visualize-time))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/cancel background-fiber :stop)
+
+janet event-loop.janet
+hello
+..........goodbye
+```
+
+There we go. We wait for a second, and now you can viscerally appreciate the passage of time through the universal language of small progress dots.
+
+Now, since there’s only one “waiting state” that we can be in, and since the function’s control flow is so easy to exit, an exception feels like a little bit of overkill.
+
+But there’s another way that we can influence how the scheduler resumes this thread: we can ask `ev/go` to “fill in” the current value that it’s waiting for, overriding whatever the actual event loop might be doing.
+
+Normally `ev/sleep` just “returns `nil`”, by which I mean “the Janet event loop resumes our fiber with the value `nil` for this expression.” But we can cause it to return a different result:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (var stopped false)
+  (while (not stopped)
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (if (= (ev/sleep 0.1) :stop)
+      (set stopped true))))
+
+(def background-fiber (ev/call visualize-time))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/go background-fiber :stop)
+
+janet event-loop.janet
+hello
+..........goodbye
+```
+
+`ev/go` is just like calling `resume` on the fiber, except that we can’t manually `resume` a fiber once we hand it to the event loop. Janet calls these fibers “root fibers,” and they can only be resumed with `ev/go`.
+
+And this is pretty weird; I don’t even know what would happen if the fiber were *actually* waiting on something, and I don’t know when we would reasonably want to jump in front of the event loop like this.
+
+And while this code is a bit shorter than the exception version in this particular case, if there were multiple points where our background fiber could yield to the event loop, we could use an exception to take care of all of them at once (instead of having to check for `:stop` at every yield point).
+
+So let’s go back to the exception-throwing case, and talk about another way that we could handle this gracefully:
+
+event-loop.janet
+
+```
+(defn visualize-time []
+  (while true
+    (prin ".")
+    (flush) # output is line-buffered by default
+    (ev/sleep 0.1)))
+
+(def background-fiber (ev/call visualize-time))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/cancel background-fiber "interruption")
+
+janet event-loop.janet
+hello
+..........goodbye
+error: interruption
+  in ev/sleep [src/core/ev.c] on line 2928
+  in visualize-time [event-loop.janet] (tailcall) on line 5, column 4
+```
+
+So by default when a root fiber raises an exception, Janet will print a stacktrace like this. But we can change the way that Janet handles exceptions in root fibers, by installing a *supervisor* for the fiber.
+
+event-loop.janet
+
+```
+(defn visualize-time []
+ (while true
+   (prin ".")
+   (flush) # output is line-buffered by default
+   (ev/sleep 0.1)))
+
+(def supervisor (ev/chan))
+
+(def background-fiber (ev/go visualize-time nil supervisor))
+
+(print "hello")
+(ev/sleep 1)
+(print "goodbye")
+
+(ev/cancel background-fiber :stop)
+(def fiber-event (ev/take supervisor))
+(match fiber-event
+  [:error fib environment] (do
+    (def error (fiber/last-value fib))
+    (if (= error :stop)
+      (print "gracefully stopped")
+      (propagate error fib)))
+  event (error (string/format "unexpected fiber event %q" event)))
+
+janet event-loop.janet
+hello
+..........goodbye
+gracefully stopped
+```
+
+Which feels much better to me. The background fiber no longer needs to know how that it’s going to be canceled or exactly what cancellation is going to look like. Our top-level fiber handles the exception for it, and checks it against the value that it chose to mean “gracefully cancel”.
+
+So the way this works is that if a signal propagates all the way to a root fiber, and that signal is in the fiber’s “signal mask”, Janet will write a message about the signal into the “supervisor channel”. And `ev/go` will, by default, create a fiber with a signal mask of `:e01234`, which is why we see the error event.
+
+A channel is a bounded queue, that can be read from and written to asynchronously. Reads suspend execution until a value is available, and writes suspend execution if the queue is full, resuming once another fiber `take`s a value off the queue.
+
+We could use “supervisor channels” to implement our own scheduler, if we wanted to, reacting to errors (or other signals!) across multiple worker fibers. But we’re not going to do that, in this book. We’re not going to talk about channels much at all.
+
+Which is a shame, because channels are very cool, and they’re an important communication primitive when you’re writing complex concurrent programs. But we just aren’t going to have time to do that together, and there is already a large body of literature about “communicating sequential processes” that will teach you how to take advantage of this model of concurrency. I don’t think there’s much point to giving a Janet-specific treatment here — channels have exactly the API you’d expect.
+
+So that’s the event loop. You have seen how it works now, even if we haven’t really discussed what you can *do* with it.
+
+I suspect that you will mostly interact with the event loop when you want to perform non-blocking IO using the “stream” API, which is an abstraction over byte buffers that you can read from or write to without blocking your program. You’ll probably create streams to read or write to files or TCP sockets, although you can also create streams programmatically.
+
+streams.janet
+
+```
+(defn print-dots []
+  (while true
+    (prin ".")
+    (flush)
+    (ev/sleep 0)))
+
+(ev/call print-dots)
+
+(def f (os/open "lorem-ipsum.txt" :r))
+(print "About to read")
+(def bytes (ev/read f 10))
+(print "Done reading")
+(ev/close f)
+(print "Done closing the file descriptor")
+(printf "read %q" bytes)
+(os/exit 0)
+
+janet streams.janet
+About to read
+.Done reading
+Done closing the file descriptor
+read @"Lorem ipsu"
+```
+
+Wait, we could have just called `os/exit` this entire time?? That whole to-do about `:stop`ping the background task was actually a contrived and artificial problem I made up to talk way too much about fibers??
+
+Ah, well, the read completed very quickly, so we only got a single time-passing dot. But we can see that the other fibers in our program still got a chance to run while this was taking place.
+
+Contrast this with the blocking `file` API:
+
+blocking.janet
+
+```
+(defn print-dots []
+  (while true
+    (prin ".")
+    (flush)
+    (ev/sleep 0)))
+
+(ev/call print-dots)
+
+(def f (file/open "lorem-ipsum.txt" :r))
+(print "About to read")
+(def bytes (file/read f 10))
+(print "Done reading")
+(file/close f)
+(print "Done closing the file descriptor")
+(printf "read %q" bytes)
+(os/exit 0)
+
+janet blocking.janet
+About to read
+Done reading
+Done closing the file descriptor
+read @"Lorem ipsu"
+```
+
+Basically the same code, but `file/read` suspended our entire program (not just the current fiber) while it did the read, so the Janet event loop never got a chance to schedule the fiber running our `print-dots` function.
+
+I think it’s very important to understand why one is blocking and the other is non-blocking, so at the risk of over-explaining this pretty simple example, here’s what actually happened in the non-blocking case:
+
+The call to `ev/read` does two things: first, it tells the kernel that we want to read from the underlying file descriptor backing the stream, using epoll on Linux or kqueue on macOS or something called an `IoCompletionPort` (?) on Windows. And then it raises a user signal 9, which causes the current fiber to stop running, and ultimately (unless there is another fiber intercepting user signal 9!) yields control all the way up to the Janet event loop. And then the Janet event loop, umm, loops for a bit, checking on the jobs that we’ve asked the kernel to do, stopping only when the file descriptor has bytes available that it can read. Then the event loop `resume`s the fiber that called `ev/read` in the first place, passing it (through the `resume` call) the actual bytes that it read from the kernel.
+
+Of course the event loop is actually implemented in C, so it doesn’t literally call the Janet function `(resume bytes)`, but it does an equivalent thing.
+
+Okay.
+
+Fibers.
+
+Fibers.
+
+We’ve talked an awful lot about fibers already, haven’t we? Surely there isn’t anything else to say about them? It’s probably time for a recap now, isn’t it?
+
+So just to recap, fibers are a primitive control flow construct that you can use to do the following useful things:
+
+* catch exceptions
+* write generators
+* perform non-blocking, event-driven IO
+* early return from functions
+* write coroutines
+* scope dynamic variables
+
+Oh gosh. We haven’t talked about all of these things yet. We still have a few things to get through. But the event loop stuff was by far the trickiest bit; the rest will be pretty easy in comparison.
+
+First off: early return. I think that you know enough about fibers by this point to understand how you would implement “early return:” you just wrap the body in a fiber that intercepts a signal:
+
+```
+(defmacro with-early-return [& body]
+  ~(resume (fiber/new (fn [] ,;body) :i0)))
+
+(defn return [value]
+  (signal 0 value))
+
+(defn my-function []
+  (with-early-return
+    (print "hello")
+    (return "stopping early")
+    (print "after returning")))
+
+(print (my-function))
+```
+
+Not so bad! Except that this has the weird property that you can actually return from a function that called you. Look:
+
+early-return.janet
+
+```
+(defmacro with-early-return [& body]
+  ~(resume (fiber/new (fn [] ,;body) :i0)))
+
+(defn return [value]
+  (signal 0 value))
+
+(defn helper-function []
+  (return "helper function currently on strike"))
+
+(defn my-function []
+  (with-early-return
+    (print "do some work")
+    (helper-function)
+    (print "keep working")))
+
+(print (my-function))
+
+janet early-return.janet
+do some work
+helper function currently on strike
+```
+
+Weird, right?
+
+Now, Janet already has built-in macros that implement more sophisticated “early return” behaviors than this — `prompt`, which has this “return from a parent function” behavior, and `label`, which does not. Er, well, you can sort of do it anyway with `label`, but you’d have to give your helper functions explicit permission to return… whatever. Fiber-based control flow is just a little bit different than traditional early-return.
+
+* catch exceptions
+* write generators
+* perform non-blocking, event-driven IO
+* early return from functions
+* write coroutines
+* scope dynamic variables
+
+Oh, coroutines.
+
+We’ve spent a lot of time already talking about a *specific* application of coroutines: asynchronous event-driven IO. But coroutines in general are fancier, more powerful versions of generators, right? And generators can do lots of cool things. Coroutines should be able to do even cooler things, shouldn’t they?
+
+But you don’t see it very often! And it’s hard to come up with a simple example of when you’d want to use a coroutine to simplify your code, in part because coroutines don’t really make simple things easier. They make complex, hairy things easier.
+
+In fact, in the last year, I have only encountered one problem where I felt that coroutines — pure coroutines — were a good fit, and actually made the code simpler and easier to follow.
+
+I was writing a parser for a weird language that lets you use custom operators before you define them. So any time I encountered an unknown symbol I had to stop parsing the current statement and move onto the next one, because I didn’t know whether to parse that symbol as an operator or as a regular value. (And, for reasons, I couldn’t do a two-pass thing to identify operators ahead of time.)
+
+So a very natural way to implement that is to create a coroutine for every statement, and an outer “scheduler” for the whole program that you’re parsing. The scheduler starts the first statement’s coroutine, and lets it run until it encounters an unknown symbol (which it yields). Then the scheduler writes down the symbol that it’s waiting for, and moves on to the next statement.
+
+Whenever a coroutine finishes parsing a statement, and you learn whether it contained an operator or a function declaration, then the scheduler finds any coroutines that were waiting on that symbol and resumes them (passing in the symbol’s type when it does).
+
+You can see strong parallels between this parser and the “effectful” coroutines of the `async`/`await` variety. In both cases there’s some kind of scheduler that’s coordinating work between multiple coroutines — either the built-in event loop, or my own “parser scheduler.” In both cases yield means “I’m asking a question that you might not know the answer to yet.” And in both cases the scheduler resumes once it has the answer.
+
+But I don’t want you to think that this “shape” of problem is the only thing that you can use pure coroutines for — it’s just the only time *I* ever think to reach for them. All of my experience with coroutines comes from this asynchronous event loop type of programming, so those are the only nails I try to hit with them.
+
+Food for thought, though: generators make it easy to write ad-hoc iterators. Coroutines make it easy to write ad-hoc *state machines*. But this conversation is a little bit out of scope for this book.
+
+Oh, speaking of scopes…
+
+* catch exceptions
+* write generators
+* perform non-blocking, event-driven IO
+* early return from functions
+* write coroutines
+* scope dynamic variables
+
+We haven’t talked about dynamic variables yet, but one way to think about them is like a global variable with a stack of values. Instead of *setting* dynamic variables, you push new values for them, and when you’re done with whatever it is you’re doing, you pop that value off, restoring the dynamic variable to whatever it was set to previously.
+
+But actually, the “stack” of values is determined by the “stack” of fibers that you are currently running. Fibers each have their own view of the current “dynamic variables,” and when a fiber completes, any dynamic variables that it had set go away.
+
+This is a simplification, and it’s weird, so let’s look at a concrete example.
+
+dynamic.janet
+
+```
+(def file (file/open "output.txt" :w))
+(print "everything is normal")
+(with-dyns [*out* file]
+  (print "but this writes to a file"))
+(print "back to normal")
+
+janet dynamic.janet
+everything is normal
+back to normal
+
+cat output.txt
+but this writes to a file
+```
+
+`*out*` is a dynamic variable that determines the default destination for functions like `print` and `prin` and `printf`. By setting the dynamic variable to a new value, we essentially “redirect” these functions to write a file instead. (Note that we aren’t *actually* redirecting stdout when we do this, we’re just changing the behavior of `print`, which knows to consult this special dynamic variable.)
+
+I mostly see dynamic variables used like this: as implicit additional function arguments that are silently available to functions. So rather than `print` taking an optional argument for the destination buffer, Janet uses a pass-by-dynamic-variable calling convention for it.
+
+So how do dynamic variables work, and what do they have to do with fibers?
+
+Well, every fiber has something called an environment. You might remember environments from Chapter Two, when I said that your program’s environment is the “top-level scope.” This was a simplification: it’s not really the “program’s environment;” it’s the “default fiber’s environment.”
+
+You can manipulate the environment by calling `setdyn`, and you can query the environment by calling `dyn`. The environment is a table, so you can put any values in it, but by convention dynamic variables are named with keywords:
+
+environment.janet
+
+```
+(def f (file/open "output.txt" :w))
+(printf "*out* is actually just %q" *out*)
+(setdyn *out* f)
+(pp (curenv))
+
+janet environment.janet
+*out* is actually just :out
+
+cat output.txt
+@{f @{:source-map ("environment.janet" 1 1) :value <core/file 0x6000022512B0>}
+  :args @["environment.janet"]
+  :current-file "environment.janet"
+  :out <core/file 0x6000022512B0>
+  :source "environment.janet"}
+```
+
+Well, I actually pretty-printed it a little, but you get the idea.
+
+So you can see those other entries in our environment table — `:args` and `:current-file` and `:source` — those are actually just dynamic variables that Janet sets by default. We can get the current value with `(dyn :args)`:
+
+dyn.janet
+
+```
+(print "I have the following arguments:")
+(pp (dyn :args))
+
+janet dyn.janet
+I have the following arguments:
+@["dyn.janet"]
+
+janet -c dyn.janet dyn.jimage
+I have the following arguments:
+@["-c" "dyn.janet" "dyn.jimage"]
+```
+
+Okay, so so far these dynamic variables are just entries in the root fiber’s environment table. But when we create a new fiber, we have three choices for what environment *it* should have:
+
+* No environment at all (this is the default). If you call `setdyn` without an environment, it will automatically create an empty one for you, and install it with `fiber/setenv`.
+* The exact same environment as the code creating it (the `:i` flag, for “inherit”). If this fiber calls setdyn, it will change its parents environment table.
+* A new environment table whose prototype is equal to the parent environment (the `:p` flag, for “prototype”). This environment will be able to read all of the values in the parent environment, but if it calls `setdyn`, those changes won’t be visible to the parent fiber. (We’ll talk more about prototypal inheritance in Chapter Eight, if this doesn’t make sense.)
+
+In practice, you won’t have to think about this at all. You will just use the helper `with-dyns`, which just creates and immediately resumes a fiber with no signal mask and the `:p` environment flag, whose function first calls `setdyn` for each of the dynamic bindings and then runs all of the expressions that you pass it. Using `with-dyns` means that you don’t need to worry about your dynamic variables accidentally outliving their intended scope in the case that you raise an exception before you can clean up after yourself.
+
+* catch exceptions
+* write generators
+* perform non-blocking, event-driven IO
+* early return from functions
+* write coroutines
+* scope dynamic variables
+
+Ah, that feels good.
+
+But I actually left one thing out. One thing that I don’t really want to talk about, but that I have to mention before we can bring this chapter to a close.
+
+Janet *also* supports running fibers in their own actual OS-level threads. You can actually spawn “real” background tasks that run in parallel with the rest of your process and communicate with other fibers via thread-safe channels that you can create with `ev/thread-chan`. Janet supports multithreading.
+
+I’m not going to talk about multithreading in Janet, because I don’t have any personal experience writing multithreaded Janet, so all I could really do is regurgitate the official documentation. And the official documentation is pretty easy to understand. So go there, if you want to write multithreaded Janet.
+
+=> chapter-06.gmi Chapter Six: Control Flow →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.

@@ -1,0 +1,566 @@
+# Janet for Mortals
+
+## Chapter Six: Control Flow
+
+Alright. We just did a whole chapter on concurrency and coroutines and complicated cross-stack control flow. I think we’ve earned a break.
+
+So this is going to be a chapter about *simple* control flow. Loops and list comprehensions and `if` expressions; things like that.
+
+You’ve seen a lot of control flow already, and I didn’t think that any of it deserved explanation. The following all do the things that you’d expect them to:
+
+```
+(each x [1 2 3]
+  (print x))
+
+(for x 0 3
+  (print x))
+
+(while true
+  (print x))
+```
+
+It’s worth talking about `each`, though. `each` can iterate over a variety of data structures — tuples, arrays, structs, tables, strings, buffers, fibers (generators), and even keywords and symbols (which behave identically to strings).
+
+Janet doesn’t have a formal concept of “interfaces” or “protocols” for types to conform to, and you can’t make an iterable “object” by defining a few “methods.” Iteration is based on a single function, `next`, and you cannot overload what `next` means for types that you define in Janet.
+
+But! If you define a custom `JANET_ABSTRACT` type, you *can* provide a custom implementation of `next`. We’ll talk about this in Chapter Nine.
+
+It’s a bit weird that Janet doesn’t let you make custom iterable types without writing C code, but at the same time it means that you can always use structs and tables as generic containers: you never need to worry about accidentally inserting a key called `:next` and shadowing a method or something, so Janet has no equivalent of JavaScript’s `Object.prototype.toString.call(object)` pattern.
+
+Okay, so `next` is really simple: it gives you a way to iterate over the *keys* in a data structure:
+
+```
+repl:1:> (next [10 20 30])
+0
+repl:2:> (next [10 20 30] 0)
+1
+repl:3:> (next [10 20 30] 1)
+2
+repl:4:> (next [10 20 30] 2)
+nil
+```
+
+Keys! Not values. For tuples and arrays — and strings, and other sequential types — the keys are just indices. For associative types, they’re the, umm, keys:
+
+```
+repl:1:> (next {:foo 1 :bar 2})
+:foo
+repl:2:> (next {:foo 1 :bar 2} :foo)
+:bar
+repl:3:> (next {:foo 1 :bar 2} :bar)
+nil
+```
+
+Note that `next` returns `nil` to indicate “no more keys”. This means that `nil` cannot, itself, be a key of any data structure! This is why Janet doesn’t allow `nil` to appear as a key in a table or a struct.
+
+For *fibers*, however, `next` actually resumes and advances to the first call to `yield`. And then it returns `0`. Yes, `0`. Always `0`.
+
+```
+repl:1:> (def generator (coro (yield 10) (yield 20) (yield 30)))
+
+repl:2:> (next generator)
+0
+repl:3:> (in generator 0)
+10
+repl:4:> (in generator 0)
+10
+repl:5:> (next generator 0)
+0
+repl:6:> (in generator 0)
+20
+repl:7:> (next generator)
+0
+repl:8:> (next generator)
+nil
+```
+
+`(in generator 0)` is the same as `(fiber/last-value generator)`.
+
+So `next` is not a pure function; it can actually advance the underlying structure in some cases. This is weird, since it *looks* like a pure function — you give it the “previous index” as an explicit argument, after all. And usually it is! But you can’t rely on that, when you’re dealing with fibers or abstract types.
+
+So `each` uses `next` to compute the keys, and then it calls `in` to look up the values. There’s also `eachk`, which calls `next` to compute the keys, and just iterates over those:
+
+```
+repl:1:> (eachk i [-3 1 99] (pp i))
+0
+1
+2
+nil
+repl:2:> (eachk i {:foo 1 :bar 2} (pp i))
+:foo
+:bar
+nil
+repl:3:> (eachk i (coro (yield 1) (yield 2)) (pp i))
+0
+0
+nil
+```
+
+And there’s `eachp`, which iterates over key-value pairs:
+
+```
+repl:1:> (eachp i [-3 1 99] (pp i))
+(0 -3)
+(1 1)
+(2 99)
+nil
+repl:2:> (eachp i {:foo 1 :bar 2} (pp i))
+(:foo 1)
+(:bar 2)
+nil
+repl:3:> (eachp i (coro (yield 1) (yield 2)) (pp i))
+(0 1)
+(0 2)
+nil
+```
+
+Nothing tricky here.
+
+Now, okay. I said that you can’t define your own iterable implementation in Janet without resorting to C code. This is true. But you *can* write a fiber that statefully iterates over values in a structure, and then iterate over *that*. It’s sort of… weird and hacky, and you can’t use `eachk` or `eachp`, because the keys of the thing you’re actually iterating over will always be `0`, but it’s an easy way to define an ad-hoc iterator:
+
+```
+(defn make-table-set [& elements]
+  (def result @{})
+  (each element elements
+    (put result element true))
+  result)
+
+(defn elements [table-set]
+  (coro
+    (eachk element table-set
+      (yield element))))
+
+repl:1:> (def good-numbers (make-table-set 1 3 60))
+@{1 true 3 true 60 true}
+repl:2:> (reduce + 0 (elements good-numbers))
+64
+```
+
+This is a pretty dumb example, but you can see that this trick allows us to use functions that use `next` under the hood, like `map` and `reduce` and `filter`, with structs and tables that have their own logical idea of how iteration should work.
+
+There’s no list of “functions that use `next` under the hood,” but as a general convention, bare functions like `map` work on all iterable values, while namespaced functions like `array/concat` only work on specific types.
+
+Okay, that’s looping on easy mode. But sometimes looping is not quite as easy. Sometimes you have to write nested loops, or loops full of conditions. Consider this simple structure:
+
+```
+(def hosts [
+  {:name "claudius"
+   :ip "45.63.9.183"
+   :online true
+   :services
+     [{:name "janet.guide"}
+      {:name "bauble.studio"}
+      {:name "ianthehenry.com"}]}
+  {:name "caligula"
+   :ip "45.63.9.184"
+   :online false
+   :services[{:name "basilica.horse"}]}])
+```
+
+Let’s say we want to print all of the names of the services for any hosts that are online. This isn’t hard; it’s just a nested loop:
+
+```
+(each host hosts
+  (if (host :online)
+    (each service (host :services)
+      (print (service :name)))))
+```
+
+I don’t think there’s anything wrong with that code, but you might prefer the following alternative:
+
+```
+(loop [host :in hosts
+       :when (host :online)
+       service :in (host :services)]
+  (print (service :name)))
+```
+
+`loop` is a little DSL that makes it easy to write nested loops and conditionals. In this case it didn’t buy us too much, since the expression was so simple. But it can really simplify complex nested looping:
+
+```
+(def hosts [
+  {:name "claudius"
+   :ip "45.63.9.183"
+   :online true
+   :services
+     {"janet.guide" true
+      "bauble.studio" false
+      "ianthehenry.com" true}}
+  {:name "caligula"
+   :ip "45.63.9.184"
+   :online false
+   :services {"basilica.horse" true}}])
+
+(each host hosts
+  (if (host :online) 
+    (let [ip (host :ip)]
+      (eachp [service-name available] (host :services)
+        (if available
+          (for instance 0 3
+            (pp [ip service-name instance])))))))
+```
+
+Now compare that to the equivalent `loop` expression:
+
+```
+(loop [host :in hosts
+       :when (host :online)
+       :let [ip (host :ip)]
+       [service-name available] :pairs (host :services)
+       :when available
+       instance :range [0 3]]
+  (pp [ip service-name instance]))
+```
+
+I fully admit that this is a contrived, artificial example, but I hope that it demonstrates some of the power of `loop`. It lets you iterate over values, keys, key-value pairs, and arbitrary ranges. It lets you insert conditions — stateless conditions like `:when`, and stateful conditions like `:while` and `:until`. `:let` allows you to give names to intermediate values, and you can inject arbitrary effects before and after the inner loop with `:before` and `:after`.
+
+`loop` can be very powerful, and perhaps even a little intimidating at first, and you might be wondering if it’s worth learning a whole weird DSL just to make nested loops slightly shorter to write. And that’s fair — I think that I mostly just use `loop` because `:when` lets me save a little indentation over `(each ... (if ...))`.
+
+But there’s a good reason to understand this little DSL, and that reason is `seq`.
+
+`seq` is not `loop`, but it uses the exact same language to express what it does. But instead of imperatively looping to perform side effects and then returning `nil`, `seq` will allocate an array that collects every value that your loop body evaluates to. It’s like a super-powered list comprehension:
+
+hosts.janet
+
+```
+(def hosts [
+  {:name "claudius"
+   :ip "45.63.9.183"
+   :online true
+   :services
+     {"janet.guide" true
+      "bauble.studio" false
+      "ianthehenry.com" true}}
+  {:name "caligula"
+   :ip "45.63.9.184"
+   :online false
+   :services {"basilica.horse" true}}])
+
+(def services
+    (seq [host :in hosts 
+          :when (host :online)
+          service :pairs (host :services)]
+      service))
+
+(pp services)
+
+janet hosts.janet
+@[("ianthehenry.com" true) ("janet.guide" true) ("bauble.studio" false)]
+```
+
+This is a dumb example, but you can often simplify a complex `map`/`filter`/`mapcat` pipeline into a single `seq` that performs your data transformation more efficiently.
+
+There’s also `tabseq`, which you can use to construct a table out of a sequence of key-value pairs, and `generate`, which will return a fiber that yields each of the inner values, so that you can lazily consume them later.
+
+That’s all I’m going to say about the `loop` macro — the official documentation has an exhaustive list of all the things you can write in a `loop` or `loop`-flavored expression, and it’s worth glancing over it once.
+
+=> https://janet-lang.org/api/index.html#loop the official documentation
+
+Finally, we should talk about `break`. `break` works just like it does in JavaScript — it breaks out of the innermost loop. But you can *also* use `break` outside of a loop, as a cheap kind of early return:
+
+```
+(defn test-breaking []
+  (if true
+    (break "everything is fine"))
+  (error "this won't get a chance to raise"))
+
+repl:1:> (test-breaking)
+"everything is fine"
+```
+
+But if you want to early return from inside a loop, or if you want to break out of multiple levels a loop at once, you’ll have to use the `prompt` or `label` macros to create an abortable fiber.
+
+Sadly `break` does not allow loops to evaluate to an expression. Loops always return `nil`, even if you break with a value:
+
+```
+repl:1:> (while true (break 123))
+nil
+```
+
+And there is no equivalent of JavaScript’s `continue` built into the language — but, of course, you can simulate it with a fiber.
+
+Alright. That’s all I know about looping in Janet. Let’s move on to conditionals.
+
+Conditionals are very easy and very simple, but they might look slightly *weird* if you’re only used to JavaScript.
+
+Let’s start with `if`. There’s no `else` in Janet’s `if`; the else part is implicit. `(if condition then-part else-part)`. This means that the `then-part` can only contain a single expression, so you might need to group expressions with `do` if you want to do multiple things.
+
+But it *also* means that there’s nowhere to write `else if` the way that you would in JavaScript:
+
+```
+if (x > 0) {
+  console.log("positive")
+} else if (x < 0) {
+  console.log("negative")
+} else if (x === 0) {
+  console.log("zero")
+} else {
+  console.log("NaNs for breakfast again??")
+}
+```
+
+If you wrote that in Janet, it would look…
+
+```
+(if (> x 0)
+  (print "positive")
+  (if (< x 0)
+    (print "negative")
+    (if (= x 0)
+      (print "zero")
+      (print "NaNaNaNaN"))))
+```
+
+…awful, in my opinion. There’s nothing worse than having to count parentheses because your expressions get too nested.
+
+But fortunately you don’t have to write code like this. Nested `if`s are such a common thing that Janet has a special macro for creating them without any triangular indentation:
+
+```
+(cond
+  (> x 0) (print "positive")
+  (< x 0) (print "negative")
+  (= x 0) (print "zero")
+  (print "NaNaNaNaN"))
+```
+
+`cond` is literally the same as writing nested `if`s:
+
+```
+repl:1:> (macex '(cond (> x 0) (print "positive") (< x 0) (print "negative") (= x 0) (print "zero") (print "NaNaNaNaN")))
+(if (> x 0) (print "positive") (if (< x 0) (print "negative") (if (= x 0) (print "zero") (print "NaNaNaNaN"))))
+```
+
+But it’s much nicer looking.
+
+Janet also has `case`, which is a special, umm, case of `cond`, when all of your conditions are of the form `(= value something)`:
+
+```
+(defn strings [data]
+  (case (type data)
+    :string (print data)
+    :tuple (each element data (strings element))
+    (error "invalid")))
+
+repl:1:> (strings ["find" ["those" ["nested"]] "values"])
+find
+those
+nested
+values
+nil
+```
+
+This is very similar to JavaScript’s `switch` statement, but much more ergonomic. No `break`s to worry about, no arguing over whether or not to indent the `case` lines. Just round, sumptuous parentheses as far as the eye can see.
+
+But Janet has another `switch` alternative that’s a lot more powerful than `case`. It’s called `match`, and instead of only matching literal values, it matches data structures against *patterns*, allowing you to check multiple values in the same structure and to easily extract individual pieces.
+
+We could use `match` to implement a really verbose and contrived calculator:
+
+```
+(defn calculate [expr]
+  (match expr
+    [:add x y] (+ x y)
+    [:subtract x y] (- x y)
+    [:multiply x y] (* x y)
+    [:divide x y] (/ x y)))
+
+repl:1:> (calculate [:add 1 2])
+3
+repl:2:> (calculate [:subtract 5 10])
+-5
+```
+
+“Simple” values like keywords and numbers and strings match by equality, while “fancy” values like tuples and structs match each of their elements by equality. Identifiers like `x` match anything, and bind the name `x` to the value that it matched. You get it. It’s pattern matching. I know JavaScript doesn’t have pattern matching, but I’m sure you’ve seen this somewhere before.
+
+You can also add arbitrary conditions to any pattern by wrapping it in parentheses and adding a boolean expression:
+
+```
+(defn calculate [expr]
+  (match expr
+    [:add x y] (+ x y)
+    [:subtract x y] (- x y)
+    [:multiply x y] (* x y)
+    ([:divide x y] (= y 0)) (error "division by zero!")
+    [:divide x y] (/ x y)))
+
+repl:1:> (calculate [:add 1 2])
+3
+repl:2:> (calculate [:divide 1 0])
+error: division by zero!
+```
+
+Which makes `match` strictly more powerful than `cond`.
+
+The pattern `_` matches anything but *doesn’t* create a binding named `_`, even though that is a valid identifier. And you can match dynamic runtime values by using `(@ identifier)`:
+
+```
+(def magic-number (math/rng-int (math/rng) 10))
+(defn guessing-game [guess]
+  (match guess
+    (@ magic-number) "you got it!"
+    _ "better luck next time"))
+
+repl:1:> (guessing-game 1)
+"better luck next time"
+repl:2:> (guessing-game 3)
+"better luck next time"
+repl:3:> (guessing-game 6)
+"better luck next time"
+repl:4:> (guessing-game 5)
+"better luck next time"
+repl:5:> (guessing-game 4)
+"you got it!"
+```
+
+Nice.
+
+Obviously this *particular* case should just be an `if` expression, but remember that you can include `_` and `(@ foo)` anywhere inside a deeply nested pattern, so they can be very useful.
+
+Alright. Now: `match` is great, and pattern matching is great, and you won’t hear me say anything against pattern matching in the abstract.
+
+But.
+
+Janet’s *implementation* of pattern matching happens to have a couple rough edges that you’ll need to be aware of when you’re using `match`.
+
+The first and largest gotcha concerns tuple patterns: tuple patterns actually match *prefixes* of sequential structures:
+
+```
+(match [1 2]
+  [] "no elements"
+  [x] "one element"
+  [x y] "two elements"
+  [x y z] "three elements")
+```
+
+What would you expect that to evaluate to? Yeah, me too. But, unfortunately, it’s `"no elements"`, because `[]` is the first pattern that matches a *prefix* of the data. If you invert the order of the cases, it does the thing you’d expect:
+
+```
+(match [1 2]
+  [x y z] "three elements"
+  [x y] "two elements"
+  [x] "one element"
+  [] "no elements")
+```
+
+That evaluates to `"two elements"`, because `[x y]` is the first matching prefix.
+
+This is terrible, and you will mess this up at some point, even though I warned you about it, because it’s just so unintuitive. My only recommendation to avoid this is to write your own `match` macro that doesn’t have this problem, and exclusively use that.
+
+There’s a historical explanation for this, which is that prior to Janet 1.20.0 there was no way to match a prefix pattern at all. But Janet 1.20.0 added `[x y & rest]` support to `match`, so you can explicitly match a prefix. But now the pattern `[x y]` means the same thing that the pattern `[x y &]` should mean, and `[x y &]` is just an error, and that’s very sad.
+
+This is true in all destructuring assignments, too:
+
+```
+repl:1:> (def [x y] [1 2 3])
+(1 2 3)
+repl:2:> x
+1
+repl:3:> y
+2
+repl:4:> (def [x y &] [1 2 3])
+repl:4:1: compile error: expected symbol following '& in destructuring pattern
+```
+
+:(
+
+The next gotcha has to do with associative patterns — matching tables and structs.
+
+Associative patterns can be very annoying in Janet, because of the fact that *structs and tables cannot contain `nil`*. This is unfortunate, and I’m very sorry; it’s still my least favorite thing about Janet. But it’s something that you’ll have to be aware of, because you might find yourself writing a very simple `match` like this:
+
+```
+(def binary-tree {:value 10 :left nil :right {:value 15 :left nil :right nil}})
+
+(defn contains? [tree needle]
+  (match tree
+    nil false
+    {:value (@ needle)} true
+    {:value value :left left :right right} (cond
+      (< needle value) (contains? left needle)
+      (> needle value) (contains? right needle))))
+```
+
+And then being very surprised that it does not work:
+
+```
+repl:1:> (contains? binary-tree 10)
+true
+repl:2:> (contains? binary-tree 15)
+nil
+```
+
+This is because the pattern `{:left _}` *cannot match* a struct with `{:left nil}`, because there are no structs with `{:left nil}`. `{:left nil}` is the same as `{}`. It’s the empty struct. Really:
+
+```
+repl:1:> {:left nil}
+{}
+```
+
+This isn’t the end of the world; it just means that we can’t use `nil` as a sentinel value in any associative data structures. Arguably it’s nice to have a separate sentinel *anyway*, but usually when I’m hacking up a quick script I just want to reach for `nil` in the same places that I would reach for `null` in other languages. But remember: `nil` is *not* `null`. `nil` is `undefined`, so we have to make our own `null` substitute:
+
+```
+(def empty-tree @{})
+
+(def binary-tree
+  {:value 10
+   :left empty-tree
+   :right {:value 15 :left empty-tree :right empty-tree}})
+
+(defn contains? [tree needle]
+  (match tree
+    (@ empty-tree) false
+    {:value (@ needle)} true
+    {:value value :left left :right right} (cond
+      (< needle value) (contains? left needle)
+      (> needle value) (contains? right needle))))
+
+repl:1:> (contains? binary-tree 10)
+true
+repl:2:> (contains? binary-tree 11)
+false
+repl:3:> (contains? binary-tree 15)
+true
+```
+
+I’m using an empty table because I just want some globally unique value, and the address of a mutable data structure is guaranteed to be unique. You could also use a buffer or an array or even a *generated symbol*, if you were fancy, which we’ll talk about in Chapter Thirteen.
+
+So that’s `match`. The most powerful conditional control flow statement.
+
+`cond`, `case`, and `match` all take pairs of “thing to check” and “expression to evaluate if that thing passes the check.” But they can all *optionally* take a single final argument to act as a default expression if nothing else matches before that. Otherwise, they’ll default to `nil`.
+
+```
+(case x
+  1 "one"
+  2 "two"
+  "default value")
+
+(cond
+  (= x 1) "one"
+  (= x 2) "two"
+  "default value")
+
+(match x
+  1 "one"
+  (@ (+ 1 1)) "two"
+  "default value")
+```
+
+And that’s control flow! That was easy, wasn’t it? I mean, compared to fibers, that was nothing.
+
+There are a few little stragglers that we can knock out quickly before we say goodbye: `when` is a lot like `if`, but `when` has no else part, so you can write multiple things in the then part without having to wrap them in `do`:
+
+```
+(when (even? x)
+  (print "it's even!")
+  (print "this is a joyous day"))
+```
+
+I think of `when` as an imperative, side-effecty thing, and `if` as more of an expressiony thing. But `(when x y z)` is just shorthand for `(if x (do y z))`.
+
+There’s also `unless`, which is exactly like `when`, but inverts the condition. So `(unless x y z)` is the same as `(if (not x) (do y z))`.
+
+Actually, there’s shorthand for that too: `(if-not x (do y z))`.
+
+There’s actually a whole menagerie of additional control flow constructs that you could use — `if-let` and `when-let`, `if-with` and `when-with`. And `forever`, which is an alias for `while true`, and `forv`, which is just like `for` except that you can mutate the iteration variable within the loop. I’m not going to talk about these because they’re pretty straightforward and not incredibly useful, but you should look them up when you get home.
+
+=> chapter-07.gmi Chapter Seven: Modules and Packages →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.

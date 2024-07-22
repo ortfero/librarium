@@ -1,0 +1,878 @@
+# Janet for Mortals
+
+## Chapter Seven: Modules and Packages
+
+Eventually you’re going to want to put code in multiple files. Like this:
+
+helpers.janet
+
+```
+(defn shout [x]
+  (printf "%s!"
+    (string/ascii-upper x)))
+```
+
+main.janet
+
+```
+(use ./helpers)
+
+(shout "hey there")
+
+janet main.janet
+HEY THERE!
+```
+
+There are two macros that you’ll reach for when you’re doing this: `use` and `import`.
+
+`use` brings all of the public bindings from one file into another. `import` brings them in, but with a module prefix:
+
+helpers.janet
+
+```
+(defn shout [x]
+  (printf "%s!"
+    (string/ascii-upper x)))
+```
+
+main.janet
+
+```
+(import ./helpers)
+
+(helpers/shout "ahoy")
+
+janet main.janet
+AHOY!
+```
+
+You can specify a different module name with `(import ./helpers :as h)` — that will give you `h/shout` — or a different prefix altogether: `(import ./helpers :prefix "helpers--")` will give you `helpers--shout` instead.
+
+This is all very easy and intuitive, but it’s worth spending some time talking about precisely what this means and how this works. Let’s notice a few things here:
+
+* We specified the module as a *path*, `./helpers`, not a name like `helpers`.
+
+  If we import something as a bare name, Janet will try to load a package with that name from the module load path, which defaults to `/usr/local/lib/janet` but can be overridden with the `JANET_PATH` environment variable. We’ll talk more about this in a bit.
+
+* We didn’t specify a file extension.
+
+  This is because Janet can import modules in a few different formats. It can import source files, obviously, with the extension `.janet`. It can import *directories* — if `helpers.janet` doesn’t exist, Janet will look for `helpers/init.janet` instead. It can also import `.jimage` files — precompiled images — and `.so`/`.dll` files, when you have precompiled native libraries. (We’ll talk more about that in Chapter Nine.)
+
+* We didn’t do anything to “export” the `shout` function, or declare ourselves as a module, or anything like that.
+
+That last point is sort of interesting, and is somewhere that Janet differs from JavaScript.
+
+In Janet, when we import a source file, we’re really importing the *environment* of that file. Er, the environment that results from executing that file.
+
+Recall from Chapter Two that top-level statements execute during file “compilation,” and Janet source files end up producing “environments,” which are tables of bindings and metadata to values.
+
+So `(use ./helpers)` will actually *execute* the script `./helpers.janet`, compute its environment, and then create a bunch of local names in our environment with the same values. Er, but “a bunch” in this case is only one, because the environment happened to only have one identifier. But, you know, in general it’s a bunch.
+
+We can actually split this up into smaller steps: we can compute the module’s environment without creating any names in our own environment. We can just grab a hold of it with `require`:
+
+helpers.janet
+
+```
+(defn shout [x]
+  (printf "%s!"
+    (string/ascii-upper x)))
+```
+
+require.janet
+
+```
+(def helpers
+  (require "./helpers"))
+
+(pp helpers)
+
+janet require.janet
+@{shout @{:doc "(shout x)\n\n"
+          :source-map ("helpers.janet" 1 1)
+          :value <function shout>}
+  :current-file "helpers.janet"
+  :macro-lints @[]
+  :source "helpers.janet"}
+```
+
+Note that `require` is actually a *function*, not a macro, so we have to pass `"./helpers"` as a string so that Janet doesn’t look for a variable called `./helpers` (it’s a valid identifier!). The expression still executes at compile-time because we’re using it as a top-level statement, but you *could* `require` something at runtime if you wanted to — there’s even a function version of `import` that you can use, called `import*`. (There’s no `use*`, but that’s just `import* :prefix ""`.)
+
+Janet will only execute the scripts we import once, and will cache the returned environments for future `use` or `import` or `require` invocations. But we can pass `:fresh true` to one of those calls to bypass the module cache, which is useful if we’re programming interactively and want to reload a module without restarting the repl.
+
+But okay. Sometimes when you write a module, you don’t want to export everything. You can also create “private” bindings in an environment, with `def-`, `var-`, `defn-`, and `defmacro-`.
+
+helpers.janet
+
+```
+(def- upcase string/ascii-upper)
+
+(defn shout [x]
+  (printf "%s!"
+    (upcase x)))
+```
+
+private.janet
+
+```
+(print "this environment:")
+(pp (require "./helpers"))
+(print)
+(print "creates these bindings:")
+(use ./helpers)
+(pp (curenv))
+
+janet private.janet
+this environment:
+@{shout @{:doc "(shout x)\n\n"
+          :source-map ("helpers.janet" 3 1)
+          :value <function shout>}
+  upcase @{:private true
+           :source-map ("helpers.janet" 1 1)
+           :value <cfunction string/ascii-upper>}
+  :current-file "helpers.janet"
+  :macro-lints @[]
+  :source "helpers.janet"}
+
+creates these bindings:
+@{shout @{:private true}
+  :args @["private.janet"]
+  :current-file "private.janet"
+  :macro-lints @[]
+  :source "private.janet"}
+```
+
+Okay, so I have a few things to say about this.
+
+First off, we can see that `upcase` is a normal entry in the environment table, but it has the `:private true` metadata set. And `use` and `import` know to skip any binding with the `:private true` metadata.
+
+We *could* make our own `voyeur` macro that doesn’t check binding metadata, and imports private bindings the same as any others — the privateness is only advisory. This might come in handy if we ever want to write tests for implementation details of our modules, but we will speak no more of it in this book.
+
+You can make *actually* private bindings by not putting them in the environment in the first place, but instead scoping them to a block. But then you have to manually alter the current environment, since `defn` will also apply to that block.
+
+```
+(let [upcase string/ascii-upper]
+  (put (curenv) 'shout @{:value (fn [x]
+    (printf "%s!"
+      (upcase x)))}))
+```
+
+Don’t… don’t do this.
+
+Second off, take a closer look at this output:
+
+```
+creates these bindings:
+@{shout @{:private true}
+  :args @["private.janet"]
+  :current-file "private.janet"
+  :macro-lints @[]
+  :source "private.janet"}
+```
+
+`shout` is imported as a `:private` binding, so any module that imports *this* module will not re-import it. You can change that with `(import ./helpers :export true)`, which will cause it to import bindings without the `:private true` bit.
+
+But wait: `shout` is *only* `@{:private true}`. This binding has no `:value`!
+
+This is an unfortunate quirk of Janet’s `pp` behavior when it prints out tables with prototypes. This isn’t *just* the table `@{:private true}`; it also has a prototype that points to the original binding. Instead of *copying* that table and then setting `:private true`, `use` and `import` create a new table that “inherits” from the original binding:
+
+```
+(use ./helpers)
+
+(def original-shout-binding
+  (in (require "./helpers") 'shout))
+(def local-shout-binding
+  (in (curenv) 'shout))
+
+(pp local-shout-binding)
+(pp (table/getproto local-shout-binding))
+(pp original-shout-binding)
+
+(print
+  (= original-shout-binding
+     (table/getproto local-shout-binding)))
+
+janet proto.janet
+@{:private true}
+@{:value <function 0x600003DDB9A0>}
+@{:value <function 0x600003DDB9A0>}
+true
+```
+
+We’ll talk more about prototypes in Chapter Eight, but the idea is exactly the same as in JavaScript.
+
+This is important in the case that we actually imported a *variable* from another file — something declared with `var` — rather than a const binding declared with `def`. By inheriting from the original environment entry, rather than copying it, we’ll automatically see any mutations to the original variable.
+
+Okay. That’s modules in Janet.
+
+Well, actually, we kind of just scratched the surface. Janet’s module system is implemented mostly in Janet, and it’s very flexible, but you will probably not ever need to interact with it beyond `import`. But you *could*, in theory, write a custom module loader to import other things beyond images and source files; you could control the way that Janet resolves modules and searches by file extension. This is mostly useful for writing Janet *dialects* that you can import from regular files (I myself wrote a version with infix operators when I was doing lots of math stuff), but you could in theory do something more exotic. If you ever actually feel like you need to do advanced module mischief, the official documentation is a perfectly good reference.
+
+=> https://janet-lang.org/docs/modules.html the official documentation
+
+So instead of talking more about that, let’s move on to talk about `jpm`.
+
+`jpm` is the “Janet Project Manager,” not, as you might have guessed, the Janet *Package* Manager. But its role is mostly the same as `npm` or `cargo` or `opam` or any other package manager — it just, umm, well…
+
+Janet is a young language, and it has some rough edges. One of those rough edges is `jpm`. We’re going to talk about it, and it’s going to be fine, but just… lower your expectations slightly before we start.
+
+`jpm` does two things: it builds projects and it manages dependencies.
+
+Let’s start with the building bit. We’ll write a very useful binary, `cat-v`, and we’ll build it.
+
+```
+(defn choose [rng selections]
+  (def index (math/rng-int rng (length selections)))
+  (in selections index))
+
+(defn verbosify [rng word]
+  (choose rng
+    (case word
+      "quick" ["alacritous" "expeditious"]
+      "lazy" ["indolent" "lackadaisical" "languorous"]
+      "jumps" ["gambols"]
+      [word])))
+
+(defn main [&]
+  (def rng (math/rng (os/time)))
+  (as-> stdin $
+    (file/read $ :all)
+    (string/split " " $)
+    (map (partial verbosify rng) $)
+    (string/join $ " ")
+    (prin $)))
+```
+
+Note that our `cat-v` doesn’t actually concatenate anything; it only works over stdin, because, well, that seemed more likely to upset the people who get upset over how other people use `cat`.
+
+Let’s take it for a spin:
+
+```
+janet main.janet <<<"The quick brown fox jumps over the lazy dog."
+The alacritous brown fox gambols over the languorous dog.
+```
+
+Perfect. I can already tell that this is going to be very useful, so let’s set about packaging it for the rest of the world.
+
+To do this, all we have to do is create a `project.janet` file.
+
+A `project.janet` file is basically a combination of metadata and Makefile-style tasks, in script form. `jpm` will run your `project.janet` file, which will produce an environment of metadata, as well as registering tasks (as a side effect).
+
+Janet’s task runner DSL is very simple:
+
+project.janet
+
+```
+(task "say-hello" ["get-ready"]
+  (print "hello"))
+
+(task "get-ready" []
+  (print "getting ready..."))
+
+jpm run say-hello
+getting ready...
+hello
+```
+
+That’s a valid project file, although in practice they won’t really look like that. They’ll look like this:
+
+project.janet
+
+```
+(declare-project
+  :name "cat-v"
+  :description "cat --verbose"
+  :dependencies [])
+
+(declare-executable
+ :name "cat-v"
+ :entry "main.janet")
+```
+
+`declare-project` and `declare-executable` are built-in functions that will register default tasks like `build` and `install`, as well as setting all the correct metadata variables that `jpm` likes.
+
+```
+jpm build
+generating executable c source build/cat-v.c from main.janet...
+compiling build/cat-v.c to build/build___cat-v.o...
+linking build/cat-v...
+```
+
+So that actually produced a native binary that we can run and distribute just like any other executable:
+
+```
+build/cat-v <<<"the quick brown fox"
+the alacritous brown fox
+
+file build/cat-v
+build/cat-v: Mach-O 64-bit executable arm64
+
+otool -L build/cat-v
+build/cat-v:
+  /usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1319.0.0)
+
+du -h build/cat-v
+684K build/cat-v
+```
+
+684 kibibytes is not *small*, for such a trivial program. Maybe we can make it smaller? Let’s see how it was compiled.
+
+```
+jpm build --verbose
+```
+
+Oh, nothing happened. That’s unfortunate.
+
+Nothing happened because our input files didn’t change, and even though we asked for a verbose build, `jpm` won’t actually perform a rebuild if the generated targets have a newer `mtime` than the sources. So:
+
+```
+touch -m main.janet
+```
+
+And then:
+
+```
+jpm build --verbose
+generating executable c source build/cat-v.c from main.janet...
+compiling build/cat-v.c to build/build___cat-v.o...
+cc -c build/cat-v.c -DJANET_BUILD_TYPE=release -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -O2 -o build/build___cat-v.o
+linking build/cat-v...
+cc -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -O2 -o build/cat-v build/build___cat-v.o /usr/local/lib/libjanet.a -lm -ldl -pthread
+```
+
+Annoyingly, `jpm` has no way to bypass this `mtime` check and force a rebuild, so we’ll just have to run `jpm clean` before every build invocation when we’re tweaking the build settings.
+
+But alright. We can see that it’s building with `-O2`. Let’s try blindly passing `-Os` and see if that makes any difference:
+
+```
+jpm clean; jpm build --verbose --cflags="-Os"
+Deleted build directory build/
+generating executable c source build/cat-v.c from main.janet...
+compiling build/cat-v.c to build/build___cat-v.o...
+cc -c build/cat-v.c -DJANET_BUILD_TYPE=release -Os -I/usr/local/include/janet -I/usr/local/lib/janet -O2 -o build/build___cat-v.o
+linking build/cat-v...
+cc -Os -I/usr/local/include/janet -I/usr/local/lib/janet -O2 -o build/cat-v build/build___cat-v.o /usr/local/lib/libjanet.a -lm -ldl -pthread
+```
+
+Oh dear. That wasn’t what we meant. We can see that specifying our own `--cflags` got rid of the `-std=c99` flag, but did not get rid of `-O2`.
+
+In fact there is no way to get rid of `-O2` completely. `jpm` will always pass an `-O` level, and we control which optimization level by passing the `--optimize` flag to `jpm`:
+
+```
+jpm clean; jpm build --verbose --optimize=3
+Deleted build directory build/
+generating executable c source build/cat-v.c from main.janet...
+compiling build/cat-v.c to build/build___cat-v.o...
+cc -c build/cat-v.c -DJANET_BUILD_TYPE=release -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -O3 -o build/build___cat-v.o
+linking build/cat-v...
+cc -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -O3 -o build/cat-v build/build___cat-v.o /usr/local/lib/libjanet.a -lm -ldl -pthread
+```
+
+Note that `jpm`’s argument parser is pretty conservative: we have to pass `--optimize=3`; `--optimize 3` will not work.
+
+And in fact `jpm` doesn’t have a way to build with `-Os`:
+
+```
+jpm clean; jpm build --verbose --optimize=s
+Deleted build directory build/
+error: option :optimize, expected integer, got "s"
+  in errorf [boot.janet] (tailcall) on line 171, column 3
+  in setup [/usr/local/lib/janet/jpm/cli.janet] on line 50, column 26
+  in run [/usr/local/lib/janet/jpm/cli.janet] (tailcall) on line 84, column 15
+  in run-main [boot.janet] on line 3790, column 16
+  in cli-main [boot.janet] on line 3935, column 17
+```
+
+It can only build with `-O0` through `-O3`. Annoying.
+
+But, fortunately, we don’t have to use `jpm` to build this. We can build it ourselves.
+
+project.janet
+
+```
+(declare-project
+  :name "cat-v"
+  :description "cat --verbose"
+  :dependencies [])
+
+(declare-executable
+ :name "cat-v"
+ :entry "main.janet"
+ :no-compile true)
+```
+
+Note that, although we can pass `--cflags` and `--optimize` as command line flags, we can’t pass `--no-compile`. Why? No idea. Some subset of options are overridable from the command line, and are easily discoverable; others only exist in `project.janet`, and you have to read the `jpm` source to figure out what they are.
+
+```
+jpm clean; jpm build --verbose
+Deleted build directory build/
+generating executable c source build/cat-v.c from main.janet...
+```
+
+Okay. This created a very interesting file:
+
+cat-v.c
+
+```
+#include <janet.h>
+static const unsigned char bytes[] = {215, 0, 205, 0, 152, 0, 0, 7, 0, 0, 205, 127, 255, 255, 255, 12, 34, 206, 4, 109, 97, 105, 110, 206, 10, 109, 97, 105, 110, 46, 106, 97, 110, 101, 116, 216, 7, 111, 115, 47, 116, 105, 109, 101, 216, 8, 109, 97, 116, 104, 47, 114, 110, 103, 216, 5, 115, 116, 100, 105, 110, 208, 3, 97, 108, 108, 216, 9, 102, 105, 108, 101, 47, 114, 101, 97, 100, 206, 1, 32, 216, 12, 115, 116, 114, 105, 110, 103, 47, 115, 112, 108, 105, 116, 215, 0, 205, 0, 152, 0, 0, 10, 2, 2, 2, 7, 24, 206, 9, 118, 101, 114, 98, 111, 115, 105, 102, 121, 218, 2, 206, 5, 113, 117, 105, 99, 107, 210, 2, 0, 206, 10, 97, 108, 97, 99, 114, 105, 116, 111, 117, 115, 206, 11, 101, 120, 112, 101, 100, 105, 116, 105, 111, 117, 115, 206, 4, 108, 97, 122, 121, 210, 3, 0, 206, 8, 105, 110, 100, 111, 108, 101, 110, 116, 206, 13, 108, 97, 99, 107, 97, 100, 97, 105, 115, 105, 99, 97, 108, 206, 10, 108, 97, 110, 103, 117, 111, 114, 111, 117, 115, 206, 5, 106, 117, 109, 112, 115, 210, 1, 0, 206, 7, 103, 97, 109, 98, 111, 108, 115, 215, 0, 205, 0, 152, 0, 0, 6, 2, 2, 2, 1, 8, 206, 6, 99, 104, 111, 111, 115, 101, 218, 2, 216, 12, 109, 97, 116, 104, 47, 114, 110, 103, 45, 105, 110, 116, 44, 2, 0, 0, 61, 3, 1, 0, 48, 0, 3, 0, 42, 5, 0, 0, 51, 4, 5, 0, 25, 3, 4, 0, 56, 5, 1, 3, 3, 5, 0, 0, 1, 1, 1, 32, 0, 14, 0, 14, 0, 14, 0, 3, 1, 3, 0, 3, 44, 2, 0, 0, 42, 5, 0, 0, 35, 4, 1, 5, 28, 4, 3, 0, 42, 3, 1, 0, 26, 16, 0, 0, 42, 7, 2, 0, 35, 6, 1, 7, 28, 6, 3, 0, 42, 5, 3, 0, 26, 10, 0, 0, 42, 9, 4, 0, 35, 8, 1, 9, 28, 8, 3, 0, 42, 7, 5, 0, 26, 4, 0, 0, 47, 1, 0, 0, 67, 9, 0, 0, 25, 7, 9, 0, 25, 5, 7, 0, 25, 3, 5, 0, 48, 0, 3, 0, 42, 4, 6, 0, 52, 4, 0, 0, 5, 1, 2, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 0, 5, 4, 7, 0, 7, 191, 252, 5, 0, 5, 0, 5, 191, 255, 3, 0, 3, 0, 3, 216, 7, 112, 97, 114, 116, 105, 97, 108, 216, 3, 109, 97, 112, 216, 11, 115, 116, 114, 105, 110, 103, 47, 106, 111, 105, 110, 216, 4, 112, 114, 105, 110, 44, 0, 0, 0, 42, 2, 0, 0, 51, 1, 2, 0, 47, 1, 0, 0, 42, 3, 1, 0, 51, 2, 3, 0, 25, 1, 2, 0, 42, 3, 2, 0, 42, 4, 3, 0, 48, 3, 4, 0, 42, 5, 4, 0, 51, 4, 5, 0, 25, 3, 4, 0, 42, 4, 5, 0, 48, 4, 3, 0, 42, 5, 6, 0, 51, 4, 5, 0, 25, 3, 4, 0, 42, 4, 7, 0, 48, 4, 1, 0, 42, 5, 8, 0, 51, 4, 5, 0, 48, 4, 3, 0, 42, 6, 9, 0, 51, 5, 6, 0, 25, 3, 5, 0, 42, 4, 5, 0, 48, 3, 4, 0, 42, 5, 10, 0, 51, 4, 5, 0, 25, 3, 4, 0, 47, 3, 0, 0, 42, 4, 11, 0, 52, 4, 0, 0, 13, 1, 1, 22, 0, 22, 0, 12, 0, 12, 0, 12, 0, 3, 1, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3, 0, 3};
+
+const unsigned char *janet_payload_image_embed = bytes;
+size_t janet_payload_image_embed_size = sizeof(bytes);
+
+int main(int argc, const char **argv) {
+
+#if defined(JANET_PRF)
+    uint8_t hash_key[JANET_HASH_KEY_SIZE + 1];
+#ifdef JANET_REDUCED_OS
+    char *envvar = NULL;
+#else
+    char *envvar = getenv("JANET_HASHSEED");
+#endif
+    if (NULL != envvar) {
+        strncpy((char *) hash_key, envvar, sizeof(hash_key) - 1);
+    } else if (janet_cryptorand(hash_key, JANET_HASH_KEY_SIZE) != 0) {
+        fputs("unable to initialize janet PRF hash function.\n", stderr);
+        return 1;
+    }
+    janet_init_hash_key(hash_key);
+#endif
+
+    janet_init();
+
+    /* Get core env */
+JanetTable *env = janet_core_env(NULL);
+JanetTable *lookup = janet_env_lookup(env);
+JanetTable *temptab;
+int handle = janet_gclock();    /* Unmarshal bytecode */
+    Janet marsh_out = janet_unmarshal(
+      janet_payload_image_embed,
+      janet_payload_image_embed_size,
+      0,
+      lookup,
+      NULL);
+
+    /* Verify the marshalled object is a function */
+    if (!janet_checktype(marsh_out, JANET_FUNCTION)) {
+        fprintf(stderr, "invalid bytecode image - expected function.");
+        return 1;
+    }
+    JanetFunction *jfunc = janet_unwrap_function(marsh_out);
+
+    /* Check arity */
+    janet_arity(argc, jfunc->def->min_arity, jfunc->def->max_arity);
+
+    /* Collect command line arguments */
+    JanetArray *args = janet_array(argc);
+    for (int i = 0; i < argc; i++) {
+        janet_array_push(args, janet_cstringv(argv[i]));
+    }
+
+    /* Create enviornment */
+    temptab = env;
+    janet_table_put(temptab, janet_ckeywordv("args"), janet_wrap_array(args));
+    janet_gcroot(janet_wrap_table(temptab));
+
+    /* Unlock GC */
+    janet_gcunlock(handle);
+
+    /* Run everything */
+    JanetFiber *fiber = janet_fiber(jfunc, 64, argc, argc ? args->data : NULL);
+    fiber->env = temptab;
+#ifdef JANET_EV
+    janet_gcroot(janet_wrap_fiber(fiber));
+    janet_schedule(fiber, janet_wrap_nil());
+    janet_loop();
+    int status = janet_fiber_status(fiber);
+    janet_deinit();
+    return status;
+#else
+    Janet out;
+    JanetSignal result = janet_continue(fiber, janet_wrap_nil(), &ampout);
+    if (result != JANET_SIGNAL_OK && result != JANET_SIGNAL_EVENT) {
+      janet_stacktrace(fiber, out);
+      janet_deinit();
+      return result;
+    }
+    janet_deinit();
+    return 0;
+#endif
+}
+```
+
+It’s short; I recommend just reading through it. We can notice a few things here:
+
+* `jpm` embeds the marshaled image of our Janet program as literal bytes inside this source file, which is smart and cool.
+* `jpm` only marshals the `main` function, *not* the entire environment of our program.
+
+This is pretty shocking, and means that programs compiled in this way *may behave differently* than programs run directly with `janet main.janet` or programs compiled with `janet -c main.janet main.jimage` and run later with `janet -i main.jimage`.
+
+This is most likely to bite you if you’re using dynamic variables at compile time. For example, if you set *pretty-format* during the compilation phase, your changes will just get silently thrown away when you `jpm build` as a native binary.
+
+* The Janet event loop is optional, and you can run fine without it. This is useful when embedding Janet in a larger program, which we’ll talk more about in Chapter Ten.
+
+Once we have that file, we can build it ourselves:
+
+project.janet
+
+```
+(declare-project
+  :name "cat-v"
+  :description "cat --verbose"
+  :dependencies [])
+
+(declare-executable
+ :name "cat-v"
+ :entry "main.janet"
+ :no-compile true)
+
+(task "compile" ["build"]
+  (shell "cc -c build/cat-v.c -DJANET_BUILD_TYPE=release -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -Os -o build/build___cat-v.o"))
+
+(task "link" ["compile"]
+  (shell "cc -std=c99 -I/usr/local/include/janet -I/usr/local/lib/janet -Os -o build/cat-v build/build___cat-v.o /usr/local/lib/libjanet.a -lm -ldl -pthread"))
+
+jpm clean; jpm run link
+Deleted build directory build/
+generating executable c source build/cat-v.c from main.janet...
+
+du -h build/cat-v
+684K build/cat-v
+```
+
+Well, that made no difference, which isn’t surprising, since `-Os` is basically identical to `-O2`. But this was a farce anyway; I don’t really care about the binary size. In OCaml this would be, like, half a gig easy.
+
+But we learned how to add custom build tasks to a project file. This isn’t really a *good* way to build a native project, because we’re hardcoding paths and compilers and options — it is less portable now — but it is *a* way to do it that might come in handy if you want to make a more complicated build process.
+
+Also, we *really* should have written something like this:
+
+```
+(shell "cc"
+  "-c" "build/cat-v.c"
+  "-DJANET_BUILD_TYPE=release"
+  "-std=c99"
+  "-I/usr/local/include/janet"
+  "-I/usr/local/lib/janet"
+  "-Os"
+  "-o" "build/build___cat-v.o")
+```
+
+But `jpm` will politely split the first argument to `shell` for us.
+
+It will literally just split it on spaces, though; it doesn’t know anything about shell quoting conventions.
+
+Also, this isn’t really documented, so I don’t know how much you should depend on it. Reading the `jpm` source is basically the only way to figure out how to use it, and the source makes no guarantees about future stability.
+
+Alright. That’s all we’re going to say about the first half of `jpm`: building projects. Now let’s talk about managing dependencies.
+
+In the process of writing `cat-v`, we’ve implemented an extremely interesting and broadly useful function that we could factor into its own library.
+
+```
+(defn verbosify [rng word]
+  (choose rng
+    (case word
+      "quick" ["alacritous" "expeditious"]
+      "lazy" ["indolent" "lackadaisical" "languorous"]
+      "jumps" ["gambols"]
+      [word])))
+```
+
+Yep; that’s the one.
+
+We can move this into its own directory, and package it is as a project…
+
+~/src/verbosify/verbosify.janet
+
+```
+(defn- choose [rng selections]
+  (def index (math/rng-int rng (length selections)))
+  (in selections index))
+
+(defn verbosify [rng word]
+  (choose rng
+    (case word
+      "quick" ["alacritous" "expeditious"]
+      "lazy" ["indolent" "lackadaisical" "languorous"]
+      "jumps" ["gambols"]
+      [word])))
+```
+
+~/src/verbosify/project.janet
+
+```
+(declare-project
+  :name "verbosify"
+  :description "a very useful library"
+  :dependencies [])
+
+(declare-source
+ :source "verbosify.janet")
+```
+
+Note that we use `declare-source` instead of `declare-executable`, because this is a library. And now we just need to add this library as a dependency to our `cat-v` project…
+
+Well, actually, we can’t quite yet. `jpm` only knows how to install dependencies from git repositories, so we’ll need to create one first:
+
+```
+git init
+Initialized empty Git repository in /Users/ian/src/verbosify/.git/
+
+git add .
+
+git commit -m 'make a very useful library'
+[master (root-commit) 0a4e386] make a very useful library
+ 2 files changed, 18 insertions(+)
+ create mode 100644 project.janet
+ create mode 100644 verbosify.janet
+```
+
+Once that’s done, we can actually add the dependency to our `cat-v` project:
+
+project.janet
+
+```
+(declare-project
+  :name "cat-v"
+  :description "cat --verbose"
+  :dependencies ["file:///Users/ian/src/verbosify"])
+
+(declare-executable
+ :name "cat-v"
+ :entry "main.janet")
+```
+
+We declare it as a `file://` URL, because we don’t want to push this to some remote site just to pull it back. You *could* push it to some remote site and serve it over HTTP, and that’s what you’ll do for most normal dependencies. But when you’re developing libraries alongside your application, it can be convenient to reference the local path for a while.
+
+Now we want to ask `jpm` to install our declared dependencies, which we can do with `jpm deps`. But `jpm deps` will actually install our dependencies to a *global* package repository, not to a “virtual environment” or “sandbox” or something specific to this project. To install to a local directory, we actually have to call `jpm deps --local`:
+
+```
+jpm deps -l
+Initialized empty Git repository in /Users/ian/src/cat-v/jpm_tree/lib/.cache/git__file____Users_ian_src_verbosify/.git/
+remote: Enumerating objects: 4, done.
+remote: Counting objects: 100% (4/4), done.
+remote: Compressing objects: 100% (4/4), done.
+remote: Total 4 (delta 0), reused 0 (delta 0), pack-reused 0
+Unpacking objects: 100% (4/4), 536 bytes | 536.00 KiB/s, done.
+From file:///Users/ian/src/verbosify
+ * [new branch]      master     -> origin/master
+From file:///Users/ian/src/verbosify
+ * branch            HEAD       -> FETCH_HEAD
+HEAD is now at 0a4e386 make a very useful library
+generating /Users/ian/src/cat-v/jpm_tree/lib/.manifests/verbosify.jdn...
+Installed as 'verbosify'.
+copying verbosify.janet to /Users/ian/src/cat-v/jpm_tree/lib...
+```
+
+`npm` also has global and local mode; the difference is that with `npm` the default is to work on a local `node_modules/` directory, and you have to explicitly call `npm --global` to interact with the global directory. In `jpm`, unfortunately, it’s the opposite.
+
+Now this created a `jpm_tree/` directory for us, which contains the following files:
+
+```
+tree jpm_tree
+jpm_tree
+├── bin
+├── lib
+│   └── verbosify.janet
+└── man
+```
+
+Note that this does *not* put each dependency in its own directory like you would see in `node_modules/`. It just throws all of the declared source files in a single `lib/` directory. We *happened* to name our source file `verbosify.janet`, following a Janet convention, but if we had chosen a generic name like `main.janet` or `src/init.janet` or something, we would be at risk of a conflict.
+
+What happens if there’s a conflict? If you have multiple dependencies that declare a `:source` with the same name?
+
+It happens to be the case at the moment that Janet copies files in the order that you declare them as `:dependencies`, so the last listed dependency wins. And this overwriting happens silently; there’s no warning or error about the conflict. Like I said… rough edges.
+
+This is weird! In most languages you put your source files in a directory called `src/` or `lib/` or something, but most Janet libraries usually put them in a directory named after the project, because of the default way that `jpm` merges files from multiple projects together like this. But we can override that if we want, to divorce our internal directory structure from the final installation structure:
+
+```
+(declare-source
+  :source "src/init.janet"
+  :prefix "verbosify")
+```
+
+That will cause our clients to install our entry point as `jpm_tree/lib/verbosify/init.janet`.
+
+Alright. Now if we want to run our `cat-v` program, we have to run it with `jpm -l`. Because if we just run `janet`:
+
+```
+janet main.janet
+error: could not find module verbosify:
+    /usr/local/lib/janet/verbosify.jimage
+    /usr/local/lib/janet/verbosify.janet
+    /usr/local/lib/janet/verbosify/init.janet
+    /usr/local/lib/janet/verbosify.so
+  in require-1 [boot.janet] on line 2900, column 20
+  in import* [boot.janet] (tailcall) on line 2939, column 15
+```
+
+It will try to look in the global include path. Instead we want to run:
+
+```
+jpm -l janet main.janet <<<"quick brown fox"
+alacritous brown fox
+```
+
+Note: `jpm -l janet`, not `jpm janet -l`. `jpm janet -l` means something else.
+
+Or we could directly set the environment variable `JANET_PATH`, which is how Janet decides where to look for modules:
+
+```
+JANET_PATH=jpm_tree/lib janet main.janet <<<"quick brown fox"
+expeditious brown fox
+```
+
+In fact that’s all `jpm -l janet` does. Well, that and adding `jpm_tree/bin` to our `PATH`:
+
+```
+SCRIPT='(each [k v] (-> (os/environ) pairs sort) (print k "=" v))'
+$ diff -U0 -L janet <(janet -e $SCRIPT) -L jpm <(jpm -l janet -e $SCRIPT)
+--- janet
++++ jpm
+@@ -6,0 +7 @@
++JANET_PATH=/Users/ian/src/cat-v/jpm_tree/lib
+@@ -19 +20 @@
+-PATH=...
++PATH=/Users/ian/src/cat-v/jpm_tree/bin:...
+@@ -41 +42 @@
+-_=/usr/local/bin/janet
++_=/usr/local/bin/jpm
+```
+
+Alright. So now we have our app, and we have a dependency in a separate library. `cat-v` is starting to look like a real project.
+
+But let’s expand its vocabulary a little. Let’s add a few more words to our `verbosify` function:
+
+~/src/verbosify/verbosify.janet
+
+```
+(defn- choose [rng selections]
+  (def index (math/rng-int rng (length selections)))
+  (in selections index))
+
+(defn verbosify [rng word]
+  (choose rng
+    (case word
+      "quick" ["alacritous" "expeditious"]
+      "lazy" ["indolent" "lackadaisical" "languorous"]
+      "jumps" ["gambols"]
+      "dog" ["canine"]
+      "fox" ["vulpine"]
+      [word])))
+```
+
+And then we’ll update our dependencies…
+
+```
+jpm -l deps
+From file:///Users/ian/src/verbosify
+ * branch            HEAD       -> FETCH_HEAD
+HEAD is now at 0a4e386 make a very useful library
+removing /Users/ian/src/cat-v/jpm_tree/lib/verbosify.janet
+removing manifest /Users/ian/src/cat-v/jpm_tree/lib/.manifests/verbosify.jdn
+Uninstalled.
+generating /Users/ian/src/cat-v/jpm_tree/lib/.manifests/verbosify.jdn...
+Installed as 'verbosify'.
+copying verbosify.janet to /Users/ian/src/cat-v/jpm_tree/lib...
+```
+
+And test it out:
+
+```
+jpm -l janet main.janet <<<"the quick brown fox jumps over the lazy dog"
+the expeditious brown fox gambols over the lackadaisical dog
+```
+
+And it didn’t work!
+
+It didn’t work because our project has a dependency on a *git repository*, and we didn’t actually commit these changes yet. `jpm` just pulls the latest commit, and `jpm` has no idea that our working directory is dirty.
+
+What can we do about this? Unfortunately there’s no *right* answer, but we have a few options:
+
+* Commit our changes and then run *jpm -l deps* again.
+
+I know you’re very good at rebasing and amending commits, but this is still pretty annoying.
+
+* Symlink `jpm_tree/lib/verbosify.janet` to the actual source.
+
+This is a pretty good solution if you’re iterating quickly on something and you only have a single source file or directory to symlink. It lets you pick up changes to the source itself, but it won’t pick up changes to the project definition — if we add dependencies to the `verbosify` project, we’ll have to install them manually in the `cat-v` project.
+
+You’ll also have to remember to change the symlinks back once you’re done hacking, which is a little annoying.
+
+* `(use ../verbosify/verbosify)` instead of involving `jpm` at all.
+
+This also works, but I think it’s a bit worse than the symlink approach. It has the same problem of not picking up transitive dependencies, and if you import your library from multiple source files, you’ll have to edit every single import. And since Janet can’t import absolute paths, that might mean referring to a different relative path every time.
+
+* Use `jpm install` instead of `jpm deps`.
+
+Instead of pulling the `verbosify` code from our `cat-v` project, we could *push* the `verbosify` code into `cat-v` by setting a remote `JANET_PATH`:
+
+```
+cd ~/src/verbosify; JANET_PATH=../cat-v/jpm_tree/lib jpm install
+```
+
+This *seems* like it should work well, but `jpm install` actually won’t install any of `verbosify`’s dependencies. It just copies the source files. Even though installation clearly should include the dependencies necessary for the project to run. Oh well.
+
+* Fork `jpm` and add support for local file paths.
+
+I mean, that’s probably the right answer. But we’re not going to do that right now. We have some more things to cover.
+
+In real life, when we add dependencies, we’ll want to add dependencies on *specific* versions. For example, we don’t really want to say that we depend on `verbosify`, we want to say that we depend on `verbosify-1.1.0`. Otherwise future changes to the `verbosify` library could break our `cat-v` app, and we don’t want that.
+
+But `jpm` doesn’t have a concept of semver or version constraints, nor does it have a package index of specific versions. All dependencies are git repos, and `jpm` only lets us specify version constraints in the form of a version or tag:
+
+```
+(declare-project
+  :name "cat-v"
+  :description "cat --verbose"
+  :dependencies [{:url "file:///Users/ian/src/verbosify"
+                  :tag "v1.1.0"}])
+```
+
+Despite the name, `:tag` can either be the name of a tag or a revision hash. Or a branch name. Anything that you could ask git for, really.
+
+Now, it’s always a good idea to depend on specific versions of our dependencies, but that might not be sufficient to ensure that our project’s dependencies are reproducible. Because even if we lock all of our dependencies to specific revisions, those libraries might have dependencies of their own, and they might not be as fastidious as we are about how they specify them.
+
+Fortunately, `jpm` gives us a way to freeze all of a project’s transitive dependencies, by making a lockfile:
+
+```
+jpm -l make-lockfile
+created lockfile.jdn
+```
+
+That will write down specific revisions not just for your immediate dependencies, but for the whole closure of transitive dependencies, ensuring that changes to random great-grand-dependencies won’t suddenly break our business-critical `cat-v` application.
+
+Note that once we have a lockfile, we have to call `jpm -l load-lockfile` to install dependencies — `jpm deps` ignores the file.
+
+Note that `jpm deps` also ignores any lockfiles that it finds in a project’s dependencies, so if you’re publishing a library you can’t just create a lockfile and call it a day. You’ll have to specify explicit constraints in your `project.janet` file, or else the users of your library might wind up with invalid dependencies in the future.
+
+Alright. I think that’s all that I have to say about modules and packages and `jpm`, but I’d like to close this chapter by talking a little bit about the Janet package ecosystem.
+
+The Janet package ecosystem is… young.
+
+There is no equivalent of the `npm` registry; packages are just Git repos floating around on the internet.
+
+Except that there *is* a registry, sort of, of packages that you can install with short, abbreviated names. `jpm install sqlite3`, for example, will (globally) install a package called `sqlite3`, and that name registry has to live somewhere.
+
+In fact, it lives in this file right here:
+
+=> https://github.com/janet-lang/pkgs/blob/master/pkgs.janet
+
+It’s not a long list!
+
+But that’s just the packages that have special short names; there are plenty of other packages that never bothered to make a PR against that registry. It’s not an exhaustive list by any means.
+
+If you’re looking for a third-party package, another way to find it is by searching the website Powered by Janet. It’s still a small ecosystem! But not quite as small as the official registry implies.
+
+=> https://goto-engineering.github.io/powered-by-janet/ Powered by Janet
+
+There is one package in particular that’s worth mentioning now: Spork.
+
+Spork is a monolithic, first-party “contrib” module. It’s a bit of a grab bag of lots of things that don’t really fit into the standard library: Spork has a JSON parser, a code formatter, helper functions for working with generators, a UTF-8 parser that doesn’t actually conform to the UTF-8 specification… there are dozens of packages in Spork, of varying scope and quality.
+
+Of course you can depend on the Spork mega-library and only use a small part of it, but by doing so you’re locked into a single version of Spork for all of its components. If you want to upgrade to a newer Spork to pick up changes to the `spork/zip` module, but you want to keep running an old version of `spork/argparse`, then… you can’t. Sorry.
+
+This monolithicity is also annoying if you’re targeting WebAssembly, because Spork contains native modules that won’t build with Emscripten. So even if you just want to use some of the pure Janet parts of Spork, you can’t, because adding a dependency on Spork will break your build.
+
+I don’t know why Spork exists as a single library, rather than a collection of many. If I had to guess I’d say that it’s because `jpm` doesn’t have many affordances for managing project dependencies easily. But I don’t know. You should be aware of Spork, but I would caution you to be wary of it.
+
+=> chapter-08.gmi Chapter Eight: Tables and Polymorphism →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.

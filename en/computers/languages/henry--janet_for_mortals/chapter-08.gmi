@@ -1,0 +1,301 @@
+# Janet for Mortals
+
+## Chapter Eight: Tables and Polymorphism
+
+Janet tables are very similar to JavaScript objects, and they fill the same roles in the language: you can use a table as a primitive associative data structure, or you can use tables to emulate “instances” of a “class.” As a matter of fact, Janet tables are *so* similar to JavaScript objects that I’m not going to try to explain them from first principles — instead, I’m just going to describe how they differ.
+
+Remember that tables come in both mutable (“table”) and immutable (“struct”) varieties, but I’m going to use the term “table” loosely to mean “one of Janet’s associative data structures.” They’re exactly the same, apart from the mutability bit.
+
+First off, the big one: keys of a JavaScript object must be strings, while keys of a Janet table can be any value. Well, *almost* any value. You can’t use `NaN` as a key, which makes perfect sense, because `NaN` is not equal to itself. And you can’t use `nil` as a key, because, as we saw in Chapter Six, returning `nil` is how `next` indicates that there aren’t any more keys.
+
+However! Unlike JavaScript, and literally every other language except Lua, Janet does not let you store `nil` as a *value* of a table. It’s just not allowed:
+
+```
+repl:1:> {:foo 123 :bar nil}
+{:foo 123}
+```
+
+It’s not an error! It’s just silently dropped.
+
+This has some convenient side effects: it means that you can check if a key exists in a table by doing `(nil? (foo :key))` — there is no explicit `(has? foo :key)` — and this plays nicely with `if-let` and `when-let`.
+
+Although note that such a `nil` check doesn’t tell you if the key exists on that *specific* table or if it exists somewhere in its prototype chain — if you care about that, use `(nil? (table/rawget foo :key))` instead.
+
+It also means that Janet doesn’t have a function to delete a key from a table. Instead, to remove a key, you set its value to `nil`:
+
+```
+repl:1:> (def foo @{:x 1})
+@{:x 1}
+repl:2:> (set (foo :x) nil)
+nil
+repl:3:> foo
+@{}
+```
+
+So this is cute, I guess, but honestly this is one of my least favorite things about Janet. And I realize that distinguishing “key not found” from “key found but set to `nil`” is a problem that every dynamic language solves in a different way, and every approach has tradeoffs, and now is not the time to compare and contrast them or voice my opinions about the *clearly correct* solution (Python’s) (don’t @ me) so let’s move on to talking about prototypes.
+
+*Lightning* refresher on prototypal inheritance: all tables have a magic, hidden field called a “prototype,” which is either `nil` or a pointer to another table. When you lookup a key that doesn’t exist on a table, the table will check if its prototype has the key. And then its prototype will check *its* prototype if needed, and so on until it either finds the key or reaches the “root” prototype (a table that has a prototype of `nil`).
+
+In practice — using JavaScript terminology — you usually use this to put “methods” (which are just functions!) on a “prototype” object, and then create “instances” that have that object-full-of-methods as their prototype. So all “instances” of a “class” share the same prototype, and when you type `foo.bar()` you’re (usually!) invoking the “method” `bar` that lives in the *prototype* of `foo`, not in `foo` itself.
+
+Unlike JavaScript, the prototype of a table is not a secret hidden entry — there’s no equivalent of `obj.__proto__`. A table’s prototype is a completely separate field that you can only retrieve with the `table/getproto` or `struct/getproto` functions.
+
+Also unlike JavaScript, tables in Janet have no default prototype, which means there are no methods common to all tables. Instead, common functionality that you would find on JavaScript’s `Object.prototype` exist as functions — so the Janet way to write `{}.toString()` is `(string {})`. This sidesteps a whole class of JavaScript problems, including everyone’s favorite (recently retired!) `Object.prototype.hasOwnProperty.call(obj, 'key')`.
+
+=> https://caniuse.com/mdn-javascript_builtins_object_hasown recently retired!
+
+Janet tables have no equivalent of JavaScript object properties — there are no getters or setters in Janet, and table entries have no metadata like JavaScript’s `enumerable` flag. Instead, when you enumerate the keys of a table using `next`, you always enumerate the keys of that *specific* table, and not any of the keys from its prototype.
+
+Finally, we should talk about methods.
+
+Like JavaScript, “methods” in Janet are just functions. *Unlike* JavaScript, Janet methods actually make sense. There is no secret, magic `this` argument that works completely differently than every other argument. `this` is conventionally spelled `self` in Janet, but it’s just a normal positional argument and you can call it whatever you want. Let’s take a look at a table with a “method:“
+
+```
+repl:1:> (def table @{:get-foo (fn [self] (self :_foo)) :_foo 123 })
+@{:_foo 123 :get-foo <function 0x600003B62BE0>}
+```
+
+We can look up the “method” like any other key:
+
+```
+repl:2:> (table :get-foo)
+<function 0x600003B62BE0>
+```
+
+And we can call the method, just like any other function:
+
+```
+repl:3:> ((table :get-foo))
+error: <function 0x600003B62BE0> called with 0 arguments, expected 1
+  in _thunk [repl] (tailcall) on line 3, column 1
+```
+
+And of course this is an error, because `:get-foo` is a function that takes one argument. We have to pass it its `self` argument:
+
+```
+repl:4:> ((table :get-foo) table)
+123
+```
+
+But it’s very cumbersome to repeat `table` like that, so Janet has a shorthand to invoke functions in one shot like this:
+
+```
+repl:5:> (:get-foo table)
+123
+```
+
+When we “call” a keyword like this, it looks up the function on the table and then calls the function with the table as its first arguments — plus any remaining arguments. So the following two lines are exactly equivalent:
+
+```
+(:method table x y)
+((table :method) table x y)
+```
+
+So: now that we understand how tables work, let’s take a look at how we could actually *use* them to simulate a sort of object-oriented programming.
+
+```
+(def counter-prototype
+  @{:add (fn [self amount] (+= (self :_count) amount))
+    :increment (fn [self] (:add self 1))
+    :count (fn [self] (self :_count))})
+
+(defn new-counter []
+  (table/setproto @{:_count 0} counter-prototype))
+
+(def counter (new-counter))
+
+(print (:count counter))
+(:increment counter)
+(print (:count counter))
+(:add counter 3)
+(print (:count counter))
+
+janet counter.janet
+0
+1
+4
+```
+
+Note that this is a little more verbose than it would look in JavaScript. We have to define the prototype explicitly, along with a separate constructor/“factory” function that’s in charge of hooking it up correctly. Prototypes and constructor functions aren’t bundled together in Janet like they are in JavaScript, although we *could* bundle them together if we wanted to:
+
+```
+(def Counter
+  (let [proto @{:add (fn [self amount] (+= (self :_count) amount))
+                :increment (fn [self] (:add self 1))
+                :count (fn [self] (self :_count))}]
+    (fn [] (table/setproto @{:_count 0} proto))))
+
+(def counter (Counter))
+(print (:count counter))
+(:increment counter)
+(print (:count counter))
+(:add counter 3)
+(print (:count counter))
+```
+
+Or we could make an explicit first-class class, distinct from the constructor:
+
+```
+(def Counter
+    {:proto @{:add (fn [self amount] (+= (self :_count) amount))
+              :increment (fn [self] (:add self 1))
+              :count (fn [self] (self :_count))}
+     :new (fn [self]
+       (table/setproto @{:_count 0} (self :proto)))})
+
+(def counter (:new Counter))
+(print (:count counter))
+(:increment counter)
+(print (:count counter))
+(:add counter 3)
+(print (:count counter))
+```
+
+Or we could write a macro that lets us write something like ES6’s `class` syntax:
+
+```
+(class Counter
+  constructor (fn [self] (set (self :_count) 0))
+  add (fn [self amount] (+= (self :_count) amount))
+  increment (fn [self] (:add self 1))
+  count (fn [self] (self :_count)))
+
+(def counter (Counter))
+(print (:count counter))
+(:increment counter)
+(print (:count counter))
+(:add counter 3)
+(print (:count counter))
+```
+
+We’ll talk about *how* we could write such a macro in Chapter Thirteen.
+
+We can do anything we want! There are no rules here, and there aren’t even really idiomatic conventions for this sort of thing in Janet. Object-oriented programming just isn’t very common — it’s far more common to write modules full of functions than it is to write tables full of methods. But if you want to write in an object-oriented style, pick the style you like best — Janet only gives you the barest of building blocks to work with.
+
+Now, *why* might we want to do any of this? What’s the point of object-oriented programming in the first place?
+
+The point is *polymorphism*, which means defining different sorts of values that have the same interface. For example:
+
+```
+(defn print-all [readable]
+  (print (:read readable :all)))
+
+(with [file (file/open "readme.txt")]
+  (print-all file))
+
+(with [stream (net/connect "janet.guide" 80)]
+  (:write stream "GET / HTTP/1.1\r\n\r\n")
+  (print-all stream))
+```
+
+`file/open` returns a `core/file` abstract type, and `net/connect` returns a `core/stream` abstract type. But both of these types have a method called `:close`, so they both work with the `with` macro. `with` executes its body and then calls `(:close file)` or `(:close stream)`, and it works on any value that has a `:close` method. You might call it a *polymorphic macro*, except that that term is weird and misleading and let’s not call it that. It’s just a regular macro that happens to expand to code that exploits runtime polymorphism.
+
+Files and streams *also* both have a method called `:read`, so we can pass them to the polymorphic function `print-all`. `print-all` works with any value that has a `:read` method — files, stream, or even custom types that we define ourselves, be they tables or abstract types.
+
+Tables and abstract types are the *only* polymorphic values in Janet. We can never add a `:read` method to a tuple, for instance, even if we really want to. And tables are pretty limited in what you can actually do with them: you can define whatever methods you want, but there aren’t very many functions in the Janet standard library that will try to call methods.
+
+In fact the only built-in functions that you can overload with a method are the “math operator” functions:
+
+```
+repl:1:> (def addable @{:+ (fn [a b] (printf "adding %q %q" a b) 10)})
+@{:+ <function 0x600002E4C0C0>}
+repl:2:> (+ addable "foo")
+adding @{:+ <function 0x600002E4C0C0>} "foo"
+10
+```
+
+And the “bitwise operator” functions:
+
+```
+repl:1:> (bxor @{:^ (fn [a b] a)} nil)
+@{:^ <function 0x600002E57960>}
+```
+
+And the “polymorphic compare” function called `compare`, which you can override with the `:compare` method:
+
+```
+repl:1:> (def compare-on-value (fn [a b] (compare (a :_value) (b :_value))))
+<function 0x600000A4E260>
+repl:2:> (def box-value (fn [value] @{:_value value :compare compare-on-value}))
+<function 0x600000A584E0>
+repl:3:> (compare (box-value 1) (box-value 2))
+-1
+repl:4:> (compare (box-value 2) (box-value 2))
+0
+repl:5:> (compare (box-value 3) (box-value 2))
+1
+```
+
+But note that the normal comparison operators, like < and = and >= do not use the polymorphic compare function.
+
+```
+repl:6:> (= (box-value 2) (box-value 2))
+false
+```
+
+There are polymorphic versions of the standard comparators that you can use instead:
+
+```
+repl:7:> (compare= (box-value 2) (box-value 2))
+true
+```
+
+Which are useful if you want to, for example, sort values like these, since the default `sort` functions also do not use polymorphic comparison by default:
+
+```
+repl:8:> (sort @[(box-value 1) (box-value 2)])
+@[@{:_value 2 :compare <function 0x600000A4E260>} @{:_value 1 :compare <function 0x600000A4E260>}]
+repl:9:> (sort @[(box-value 1) (box-value 2)] compare<)
+@[@{:_value 1 :compare <function 0x600000A4E260>} @{:_value 2 :compare <function 0x600000A4E260>}]
+```
+
+In fact the only built-in functions that use polymorphic compare are `zero?`, `pos?`, `neg?`, `one?`, `even?`, and `odd?`, for some reason.
+
+But note that if you’re defining an abstract type, you *can* override the standard comparison functions — the polymorphic compare interface only matters for tables, and only for these few functions. It’s odd.
+
+Back to operators: operators can also be overloaded in the “right-hand” direction:
+
+```
+repl:1:> (def right-addable @{:r+ (fn [a b] (printf "adding %q %q" a b) 10)})
+@{:r+ <function 0x600002E57620>}
+repl:2:> (+ "foo" right-addable)
+adding @{:r+ <function 0x600002E57620>} "foo"
+10
+```
+
+But, like, we’re entering the realm of Janet trivia now. In practice you will probably never make tables that override any of the default operators, because it just isn’t very useful. You *could* use it to implement something like a vector:
+
+points.janet
+
+```
+(def Point (do
+  (var new nil)
+  (def proto
+    {:+ (fn [{:x x1 :y y1} {:x x2 :y y2}]
+          (new (+ x1 x2) (+ y1 y2)))})
+  (set new (fn [x y]
+    (struct/with-proto proto :x x :y y)))))
+
+(pp (+ (Point 1 2) (Point 3 4)))
+```
+
+Janet doesn’t hoist function definitions, so we have to “forward-declare” `new` as a variable and then re-assign it in order to close over it in the method.
+
+Because structs are immutable, there is no `struct/setproto`. Instead, we use `struct/with-proto` to create a struct with a prototype.
+
+```
+janet points.janet
+@{:x 4 :y 6}
+```
+
+Which is not *useless*, but it’s unlikely that we’d want to do this in practice — allocating a struct isn’t free; if we care about performance we’d probably write this as an abstract type and save a few bytes for every point. And if we don’t care about performance, it’s more convenient to just write something like `(+ [1 2] [3 4])` and redefine `+` to work with that.
+
+So, to recap: math operators, bitwise operators, and `compare`. Those are the only things that tables can override. Custom `to-string`? Nope. And if we’re trying to make our own data structure, we can’t overload the definition of `length`, nor, as we saw in Chapter Six, can we define a custom `next`. This limits the usefulness of tables-as-custom-types quite a bit, and in practice if we’re trying to make our own types, we’ll probably wind up writing abstract types instead. They’re much more flexible, and give us a lot more control over how our values work at runtime.
+
+So we’ll talk about how to do that soon.
+
+Actually, we’ll talk about how to do that *right now*.
+
+=> chapter-09.gmi Chapter Nine: Xenofunctions →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
