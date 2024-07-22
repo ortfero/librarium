@@ -1,4 +1,5 @@
-# Librarium
+# Cukta te kabri
 
+=> en/computers/languages/henry--janet_for_mortals/chapter-03.gmi 2024-07-22 Janet for Mortals. Chapter Three: Macros and Metaprogramming
 => en/computers/languages/henry--janet_for_mortals/chapter-02.gmi 2024-07-21 Janet for Mortals. Chapter Two: Compilation and Imagination
 => en/computers/languages/henry--janet_for_mortals/chapter-01.gmi 2024-07-19 Janet for Mortals. Chapter One: Values and References
