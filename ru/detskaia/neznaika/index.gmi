@@ -1,4 +1,4 @@
-# Незнайка
+# Детская литература / Приключения Незнайки
 
 => nosov--prikliucheniia_neznaiki/index.gmi Носов Николай. Приключения Незнайки и его друзей
 => nosov--neznaika_v_solnechnom_gorode/index.gmi Носов Николай. Незнайка в Солнечном городе
