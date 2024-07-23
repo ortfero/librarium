@@ -1,0 +1,634 @@
+# Janet for Mortals
+
+## Chapter Ten: Embedding Janet
+
+Okay. In the last chapter we learned how to call C code from Janet. In this chapter, we’re going to learn how to call Janet code from C.
+
+Specifically, we’re going to learn how to embed the Janet interpreter inside a larger app — it doesn’t *have* to be written in C, as long as it has a C FFI. But we’ll stick with C as our lingua franca.
+
+Oh wait! I forgot that JavaScript was supposed to be our lingua franca. Oh no. Oh no. We just spent a whole chapter writing C code together and you didn’t say anything to me? Did you forget about the `(say)` function?
+
+Well, hmm. Maybe we can have two… linguae franca? Lingua francae? Whatever. Maybe we can write a C program that embeds Janet, but call *that* program from JavaScript via WebAssembly: we’ll still learn how to embed Janet, but in the end we’ll have a program that runs in the browser so other people can actually use it.
+
+Sounds like a good idea for a chapter! Let’s do it.
+
+We actually already saw how to embed Janet into a C program, back in Chapter Seven, when we looked at how `jpm` produces native executables:
+
+```
+#include <janet.h>
+static const unsigned char bytes[] = {215, 0, 205, /* ... */};
+
+const unsigned char *janet_payload_image_embed = bytes;
+size_t janet_payload_image_embed_size = sizeof(bytes);
+
+int main(int argc, const char **argv) {
+
+#if defined(JANET_PRF)
+    uint8_t hash_key[JANET_HASH_KEY_SIZE + 1];
+#ifdef JANET_REDUCED_OS
+    char *envvar = NULL;
+#else
+    char *envvar = getenv("JANET_HASHSEED");
+#endif
+    if (NULL != envvar) {
+        strncpy((char *) hash_key, envvar, sizeof(hash_key) - 1);
+    } else if (janet_cryptorand(hash_key, JANET_HASH_KEY_SIZE) != 0) {
+        fputs("unable to initialize janet PRF hash function.\n", stderr);
+        return 1;
+    }
+    janet_init_hash_key(hash_key);
+#endif
+
+    janet_init();
+
+    /* Get core env */
+    JanetTable *env = janet_core_env(NULL);
+    JanetTable *lookup = janet_env_lookup(env);
+    JanetTable *temptab;
+    int handle = janet_gclock();
+    /* Unmarshal bytecode */
+    Janet marsh_out = janet_unmarshal(
+      janet_payload_image_embed,
+      janet_payload_image_embed_size,
+      0,
+      lookup,
+      NULL);
+
+    /* Verify the marshalled object is a function */
+    if (!janet_checktype(marsh_out, JANET_FUNCTION)) {
+        fprintf(stderr, "invalid bytecode image - expected function.");
+        return 1;
+    }
+    JanetFunction *jfunc = janet_unwrap_function(marsh_out);
+
+    /* Check arity */
+    janet_arity(argc, jfunc->def->min_arity, jfunc->def->max_arity);
+
+    /* Collect command line arguments */
+    JanetArray *args = janet_array(argc);
+    for (int i = 0; i < argc; i++) {
+        janet_array_push(args, janet_cstringv(argv[i]));
+    }
+
+    /* Create enviornment */
+    temptab = env;
+    janet_table_put(temptab, janet_ckeywordv("args"), janet_wrap_array(args));
+    janet_gcroot(janet_wrap_table(temptab));
+
+    /* Unlock GC */
+    janet_gcunlock(handle);
+
+    /* Run everything */
+    JanetFiber *fiber = janet_fiber(jfunc, 64, argc, argc ? args->data : NULL);
+    fiber->env = temptab;
+#ifdef JANET_EV
+    janet_gcroot(janet_wrap_fiber(fiber));
+    janet_schedule(fiber, janet_wrap_nil());
+    janet_loop();
+    int status = janet_fiber_status(fiber);
+    janet_deinit();
+    return status;
+#else
+    Janet out;
+    JanetSignal result = janet_continue(fiber, janet_wrap_nil(), &ampout);
+    if (result != JANET_SIGNAL_OK && result != JANET_SIGNAL_EVENT) {
+      janet_stacktrace(fiber, out);
+      janet_deinit();
+      return result;
+    }
+    janet_deinit();
+    return 0;
+#endif
+}
+```
+
+And if all that we want to do is run some Janet code that we already wrote and compiled ahead of time, then this little snippet is all we need.
+
+But you probably aren’t embedding the whole Janet runtime just so that you can write part of your application logic in a higher-level language. The real reason to embed Janet in your program is so that you can run Janet scripts that *you* didn’t write at all: plugins, mods, extensions — whatever you want to call them.
+
+There are lots of neat things you can do with an embedded programming language, but since we only have one chapter to talk about this, we’ll have to pick a specific project. I think “programmatic art playground” is as good a genre as any, so we’re going to talk about how to build an app where users can write scripts that draw turtle graphics.
+
+Here, it’s easier if you take a look, so I don’t have to explain it in too much detail: https://toodle.studio. That’s the final product that we’re going to be working towards: users can write scripts that have access to a pre-defined drawing DSL, and our program will execute those scripts asynchronously over time to make little animations.
+
+=> https://toodle.studio
+
+But in case you are reading this book on paper — which you aren’t; I can tell — or have no patience for whimsical art playgrounds — which you don’t; I can tell — I will briefly summarize the features of our application:
+
+* On the left, a text box.
+* On the right, a canvas, initially blank, where we will draw art.
+* The user, whose name is Marley, can type Janet scripts into the text box.
+* Those scripts can have the side effect of creating turtles. Our program will keep track of all of the turtles.
+* Every frame, we’ll “run” all of the turtles, let them scoot forward, and then draw lines from their old positions to their new positions.
+* Our application should compile Marley’s program as she types, so that she has instant feedback about any errors.
+* But our application should not start running Marley’s program until she asks it to. It should continue running the old program even as Marley makes changes.
+* Marley should be able to restart the current program without loading the new program.
+* Marley should be able to swap out the currently running program with the new program.
+
+So, to get more technical, we have the following bits of state in our wrapper application (i.e., in JavaScript):
+
+* The current image. This can be null, if we haven’t started running any program yet. We’ll need to hold onto this in order to be able to restart the current program.
+* The next available image. This represents the result of compiling the current script. It can become the “current image” at the press of a button. It will be null if we were unable to compile Marley’s script.
+* The current environment. This holds all of the runtime state. It will be null if we haven’t started running anything yet.
+
+Then we’ll have the following bits of runtime state, which we will store as entries in the environment of our running program:
+
+* An array of turtles, which are actually just *fibers*.
+* A number representing how much we should fade out the image over time.
+
+That second part might seem like a weird unimportant detail that someone should probably just leave out of their book, but it’s actually going to be important once we get to the code. Just trust me. I *am* leaving out a lot of other details — in the actual application you can pause the current program, for example — but these are the only interesting, Janet-related bits of state.
+
+Okay, so: how do we do this?
+
+Let’s start small. Let’s say we have a string of Janet code. How do we run it?
+
+Well, we just need to do exactly what Janet does when we `import` a file: parse the source, go through each top-level statement’s abstract syntax tree, perform macro expansion on it until we’re all out of macros, call the magic built-in `compile` function to turn the abstract syntax tree into a function, and then run that function.
+
+But that sounds like a lot of work. We don’t want to do all of that by hand, in C code, even though we *could*. But fortunately Janet has a helper function that will do all of the hard work for us: `run-context`.
+
+The signature for `run-context` is pretty intimidating, because it has a million optional arguments that we could use to override how parsing works or what to do on compilation errors or whatever, but the minimal API is pretty easy to use:
+
+```
+(defn evaluate [user-script]
+  (def env (make-env root-env))
+  (run-context
+    {:env env
+     :chunks (chunk-string user-script)
+     :on-status (fn [fiber value]
+       (printf "got %q (%q)" value (fiber/status fiber)))}))
+```
+
+`run-context` will execute each top-level form in its own fiber that will catch errors. It takes a few arguments:
+
+* `env` is the environment that we’ll execute the script in.
+
+  `root-env` is the environment that contains all of the built-in functions like `+` and `array/slice` and all that. We don’t actually want to execute Marley’s program directly in that environment, so we use `make-env` to create a new table with `root-env` as its prototype. That way Marley’s script will still be able to read all of those built-in functions, but any new symbols that she defines will not pollute the global `root-env`.
+
+* `:chunks` is the actual input.
+
+* `on-status` is a callback that will run after each top-level form is finished executing.
+
+Let’s talk about `:chunks` for a minute. `run-context` doesn’t take a string directly, but instead takes a callback that it will keep invoking until it returns `nil`. That callback is responsible for writing bytes into a buffer that it takes as an argument. It also takes a Janet parser, which we can just ignore.
+
+There isn’t a default way to get a “chunking” function for a string, so I wrote a short helper:
+
+```
+(defn chunk-string [str]
+  (var unread true)
+  (fn [buf _]
+    (when unread
+      (set unread false)
+      (buffer/blit buf str))))
+```
+
+This might seem like a weird API, but typically Janet expects to be reading from a file, or from a REPL, where not all “chunks” are available up front.
+
+So that’s `run-context`, in its simplest form. Now that we understand it, let’s test it out:
+
+eval.janet
+
+```
+(defn evaluate [user-script]
+  (def env (make-env root-env))
+  (run-context
+    {:env env
+     :chunks (chunk-string user-script)
+     :on-status (fn [fiber value]
+       (printf "> %q (%q)" value (fiber/status fiber)))}))
+
+(evaluate `
+(+ 1 2)
+foo
+(print "done")
+(pp (yield 10))
+)
+(error "oh no")
+`)
+
+janet eval.janet
+> 3 (:dead)
+<anonymous>:2:1: compile error: unknown symbol foo
+done
+> nil (:dead)
+> 10 (:pending)
+nil
+> nil (:dead)
+<anonymous>:5:1: parse error: unexpected closing delimiter )
+> "oh no" (:error)
+```
+
+Let’s notice a few things about this:
+
+* Every top-level expression is wrapped in its own fiber.
+
+* Usually `on-status` is called once for every top-level statement (`:dead` means that a fiber completed successfully).
+
+* But if a top-level statement `yield`s, `on-status` will be called multiple times, until it completes or errors.
+
+  When a top-level expression yields, `run-context` will resume it with whatever `on-status` returns. In this case that was just `nil`, because `printf` returns `nil`.
+
+* `run-context` keeps going even after a parse or compilation error.
+
+That last thing is probably not what we want most of the time, because a compilation error might change the behavior of the rest of our code in unpredictable ways (if, for example, a function that was supposed to be shadowed wasn’t).
+
+We can fix that by adding a couple more callbacks to our `run-context` call:
+
+eval.janet
+
+```
+(defn evaluate [user-script]
+  (def env (make-env root-env))
+
+  (defn on-parse-error [parser where]
+    (bad-parse parser where)
+    (set (env :exit) true))
+
+  (defn on-compile-error [msg fiber where line col]
+    (bad-compile msg fiber where line col)
+    (set (env :exit) true))
+
+  (run-context
+    {:env env
+     :chunks (chunk-string user-script)
+     :on-status (fn [fiber value]
+       (printf "> %q (%q)" value (fiber/status fiber)))
+     :on-parse-error on-parse-error
+     :on-compile-error on-compile-error
+     }))
+
+(evaluate `
+(+ 1 2)
+foo
+(print "done")
+(pp (yield 10))
+)
+(error "oh no")
+`)
+
+janet eval.janet
+> 3 (:dead)
+<anonymous>:2:1: compile error: unknown symbol foo
+<anonymous>:5:1: parse error: unexpected closing delimiter )
+```
+
+Setting `(env :exit)` to `true` is how we signal to `run-context` that we don’t want it to keep going — although as you can see, it might not stop parsing immediately. But that’s pretty harmless.
+
+`bad-parse` and `bad-compile` are functions that print out those stack traces; they are the default values for the `on-parse-error` and `on-compile-error` callbacks.
+
+So this is all we need to write if we just want to *run* the user code, but remember that this code is going to have side effects — specifically, in our case, this code might create turtles.
+
+We’ll want to be able to inspect these turtles later on, so we’re going to return the final environment — but only if there was no error.
+
+eval.janet
+
+```
+(defn capture-stderr [f & args]
+  (def buf @"")
+  (with-dyns [*err* buf *err-color* false]
+    (f ;args))
+  (string/slice buf 0 -2))
+
+(defn evaluate [user-script]
+  (def env (make-env root-env))
+
+  (var err nil)
+  (var err-fiber nil)
+
+  (defn on-parse-error [parser where]
+    (set err (capture-stderr bad-parse parser where))
+    (set (env :exit) true))
+
+  (defn on-compile-error [msg fiber where line col]
+    (set err (capture-stderr bad-compile msg nil where line col))
+    (set err-fiber fiber)
+    (set (env :exit) true))
+
+  (run-context
+    {:env env
+     :chunks (chunk-string user-script)
+     :on-status (fn [fiber value]
+       (printf "> %q (%q)" value (fiber/status fiber)))
+     :on-parse-error on-parse-error
+     :on-compile-error on-compile-error
+     })
+
+  (if (nil? err)
+    env
+    (if (nil? err-fiber)
+      (error err)
+      (propagate err err-fiber))))
+```
+
+And we’re actually done now! That is a fully-fledged Janet evaluator.
+
+Note that we’re still calling `bad-parse` and `bad-compile`, which print to `(dyn *err*)` — typically stderr — but we redirect that to a buffer so that we can raise it later, and then strip off the trailing newline.
+
+There’s a little bit of subtlety here around preserving stack traces nicely: we don’t pass the fiber to `bad-compile` anymore, so it won’t print out a full stack trace, just the actual error. But later on we `propagate` the error from the original fiber, so that it preserves the original stack trace (instead of coming from our `evaluate` function).
+
+Now that we have our working `run-context`-based evaluator, let’s talk about how to actually call this function from our application code.
+
+On the one hand, we have this Janet function, which takes a Janet string. On the other hand, we have… an HTML `<textarea>` or something, from which we can extract a JavaScript string.
+
+How do you convert a JavaScript string into a Janet string?
+
+Well… it’s a little convoluted. We’re going to use something called Emscripten to compile native code into WebAssembly. Emscripten makes it really easy to interoperate between JavaScript and C++ code, so we’re going to take advantage of that power and write our wrapper program in C++, not C. Then we’ll use Emscripten to automatically translate our JavaScript string into a C++ string, and then convert that to a C string with the `.c_str()` method, and then convert that C string to a Janet string with `janet_cstringv`. Like I said: convoluted. This is the price we pay for writing a program that runs in the browser; if we were writing a native application, this would probably be a lot more straightforward.
+
+But alright, assuming that we have the input as a Janet string… how do we call it from C?
+
+There are a few steps:
+
+* Create a Janet image that contains our `evaluate` function, using `janet -c`.
+* Embed that image *somehow* in our final program — we could stick it in a literal byte array, read it from a separate file, whatever.
+* Unmarshal the image to get an environment, exactly like we saw in the compiled program example.
+* Look up the function we want to call in the environment, and hold onto it.
+* Actually call the function using `janet_pcall`.
+
+The first few parts are easy:
+
+```
+static JanetFunction *janetfn_evaluate;
+
+int main() {
+  janet_init();
+
+  Janet environment = janet_unmarshal(...);
+
+  JanetTable *env_table = janet_unwrap_table(environment);
+  Janet evaluate;
+  janet_resolve(env_table, janet_csymbol("evaluate"), &ampevaluate);
+  janet_gcroot(evaluate);
+
+  janetfn_evaluate = janet_unwrap_function(evaluate);
+}
+```
+
+Note that we also add it as a garbage collector root with the `janet_gcroot` function. This is very important!
+
+Because later on, when we call this function:
+
+```
+bool call_fn(JanetFunction *fn, int argc, const Janet *argv, Janet *out) {
+  JanetFiber *fiber = NULL;
+  if (janet_pcall(fn, argc, argv, out, &ampfiber) == JANET_SIGNAL_OK) {
+    return true;
+  } else {
+    janet_stacktrace(fiber, *out);
+    return false;
+  }
+}
+
+struct EvaluationResult {
+  bool is_error;
+  string error;
+  uintptr_t environment;
+};
+
+EvaluationResult toodle_evaluate(string source) {
+  Janet environment;
+  const Janet args[1] = { janet_cstringv(source.c_str()) };
+  if (!call_fn(janetfn_evaluate, 1, args, &ampenvironment)) {
+    return (EvaluationResult) {
+      .is_error = true,
+      .error = "evaluation error",
+      .environment = 0,
+    };
+  }
+
+  janet_gcroot(environment);
+  return (EvaluationResult) {
+   .is_error = false,
+   .error = "",
+   .environment = reinterpret_cast<uintptr_t>(janet_unwrap_table(environment)),
+  };
+}
+```
+
+We’ll have to reference `janetfn_evaluate`, and we’ll be very sad if it has been garbage collected in the interim. Which it will, by default — there’s no reason for Janet to keep this unmarshaled value around.
+
+We could also add the entire unmarshaled environment of our program as a `gcroot`, which would cause all of the functions we define to stay alive. This will come in handy once we start defining more of them, though it would mean that we’d be retaining *slightly* more memory than we need: the environment table itself and the binding entry tables, not just the `:value`s that we care about.
+
+Now note that, unfortunately, Emscripten doesn’t let us return structs containing pointers to JavaScript, so we’ll have to convert it to a number first (specifically, a `uintptr_t`). And because C++ lacks variant types, we’ll have to put it in a sort of dumb-looking struct with an explicit tag.
+
+Now, this is all fine. This works.
+
+But remember the constraints of our program: we want to be able to start and re-start this program. But an environment is a living, breathing thing — it will contain fibers and reference types and all sorts of things that we can’t just “restart.”
+
+Hmm. If we knew that all we had were immutable values, we could just hold onto the original… but there are mutable values all over the place. Our turtles are fibers, and fibers might have arbitrary amounts of internal, mutable state that we can’t possibly know about.
+
+So since our program contains mutable state, we won’t be able to run it. Instead, we’ll have to run a *clone* of it, and hold on to a pristine copy of the original.
+
+But how do we clone the environment? It’s not sufficient to copy the environment table itself — we’d have to make a deep copy of the table, plus all the data structures it references, and all of the fibers inside of it…
+
+There’s no one step “deep copy everything” function in Janet, but there *is* a way to do this: we can marshal the environment to a buffer, freezing it in carbonite, and from this static image of our program we can instantiate as many living copies as we like.
+
+In fact, huh. We evaluate a script, produce an environment, and then marshal that environment into an image, which we will then resume later… does any of that sound familiar?
+
+Exactly: we learned about this all the way back in Chapter Two. I’ve just described *imagination*. Er, *compilation*, I mean.
+
+So we aren’t really *evaluating* Marley’s script (although we are). We’re really *compiling* Marley’s script into an image, that we can then breathe life into as many times as we like.
+
+With this insight in mind, let’s modify our function slightly:
+
+```
+struct CompilationResult {
+  bool is_error;
+  string error;
+  uintptr_t image;
+};
+
+CompilationResult toodle_compile(string source) {
+  Janet environment;
+  const Janet args[1] = { janet_cstringv(source.c_str()) };
+  if (!call_fn(janetfn_evaluate, 1, args, &ampenvironment)) {
+    return (CompilationResult) {
+      .is_error = true,
+      .error = "compilation error",
+      .image = 0,
+    };
+  }
+
+  JanetTable *reverse_lookup = env_lookup_table(janet_core_env(NULL), "make-image-dict");
+  JanetBuffer *image = janet_buffer(2 << 8);
+  janet_marshal(image, environment, reverse_lookup, 0);
+
+  janet_gcroot(janet_wrap_buffer(image));
+  return (CompilationResult) {
+   .is_error = false,
+   .error = "",
+   .image = reinterpret_cast<uintptr_t>(image),
+  };
+}
+```
+
+Instead of returning an environment, we now return an image of the environment.
+
+Great! Which immediately tells us what we need to do next: we’ll need to write a function that takes an image and returns an actual environment. And then we’ll need another function that takes that environment and does something with it — advances the program; scoots the turtles forward.
+
+Whenever Marley starts a new program or restarts the current program, we’ll unmarshal the corresponding image. And then we’ll call the advance function on every frame.
+
+The “start” function is not very interesting; we’ve already seen how to unmarshal images:
+
+```
+uintptr_t toodle_start(uintptr_t image_ptr) {
+  JanetBuffer *image = reinterpret_cast<JanetBuffer *>(image_ptr);
+  JanetTable *lookup = env_lookup_table(janet_core_env(NULL), "load-image-dict");
+  Janet environment = janet_unmarshal(image->data, image->count, 0, lookup, NULL);
+
+  janet_gcroot(environment);
+  return reinterpret_cast<uintptr_t>(janet_unwrap_table(environment));
+}
+```
+
+But the “run” function is quite interesting.
+
+For starters, we’ll have to call a Janet function that actually knows the internal details of our environment and what to do with it. I’ll call it `janetfn_run`, and we’ll assume that we extracted it in `main()` exactly as we did `janetfn_evaluate`.
+
+Now this function is going to return two things: it will return a list of lines to draw, and it will return a color that will determine how the image fades out over time. This means we’ll really call *two* functions: first `janetfn_run`, and then `janetfn_get_bg`.
+
+And therein lies the interesting bit of all of this!
+
+```
+RunResult toodle_run(uintptr_t environment_ptr) {
+  JanetTable *environment = reinterpret_cast<JanetTable *>(environment_ptr);
+
+  Janet run_result;
+  Janet bg;
+  const Janet args[1] = { janet_wrap_table(environment) };
+  if (!call_fn(janetfn_run, 1, args, &amprun_result)) {
+    return run_error("evaluation error");
+  }
+  janet_gcroot(run_result);
+  if (!call_fn(janetfn_get_bg, 1, args, &ampbg)) {
+    return run_error("evaluation error");
+  }
+  janet_gcunroot(run_result);
+
+  JanetArray *lines = janet_unwrap_array(run_result);
+  int32_t count = lines->count;
+
+  auto line_vec = std::vector<Line>();
+  // convert the run_result into a C++ vector...
+
+  return (RunResult) {
+   .is_error = false,
+   .error = "",
+   .lines = line_vec,
+   .background = unsafe_parse_color(janet_unwrap_tuple(bg)),
+  };
+}
+```
+
+Notice that we return the `run_result` value from Janet to C. But then we jump back into the Janet runtime in order to extract the background color. But! We have to add the lines-to-draw value as a GC root *before* we give control back to the Janet VM. We don’t want the garbage collector to have a chance to collect that value before we’re done with it!
+
+In fact any time we give control to the Janet VM with `janet_pcall` or another function like that, we’re giving the garbage collector a chance to run, so we have to make sure that we set up the GC roots for any `Janet` value that we have a reference to in C code. Once we’re out of the VM for good, we can remove the root, because the Janet GC won’t run unless we either run some Janet code or explicitly trigger a collection.
+
+Yes, in this case we could just change the order of the code slightly so that we finish extracting values from `run_result` before we call `janetfn_get_bg`. But then our contrived example would be less educational.
+
+And now we are *almost* done. But we’re missing something very important, and we can’t leave the chapter until we fix it: when we created our images and environments, we added them as `janet_gcroots`. But we never called `janet_gcunroot` on them! Which means we have a memory leak.
+
+In order to plug it, we’ll have to add four more simple functions:
+
+```
+void retain_environment(uintptr_t environment_ptr) {
+  janet_gcroot(janet_wrap_table(reinterpret_cast<JanetTable *>(environment_ptr)));
+}
+void release_environment(uintptr_t environment_ptr) {
+  janet_gcunroot(janet_wrap_table(reinterpret_cast<JanetTable *>(environment_ptr)));
+}
+
+void retain_image(uintptr_t image_ptr) {
+  janet_gcroot(janet_wrap_buffer(reinterpret_cast<JanetBuffer *>(image_ptr)));
+}
+void release_image(uintptr_t image_ptr) {
+  janet_gcunroot(janet_wrap_buffer(reinterpret_cast<JanetBuffer *>(image_ptr)));
+}
+```
+
+I call these functions `retain` and `release`, because we’re going to treat Janet values as if they are reference-counted, which they *basically* are. The reference counts aren’t intrusive like you might be used to — when we “retain” a value, we’re really adding it to a list, and when we “release” a value, we’re removing it from the same list — but still, values can appear in the Janet root list multiple times, and *janet_gcunroot* will only remove one entry for the corresponding value.
+
+So: how do we use these?
+
+Well, for every image returned from `toodle_compile`, we’ll need to eventually call `release_image`. And for every image returned from `toodle_start`, we’ll need to call `release_environment`.
+
+But! Remember that our program actually needs to hold onto *two* images: the image of the currently-running program (so that we can restart it), and the image of the “next” program that we’ve successfully compiled (so that we can switch over to it without having to re-compile the user’s script). And these values might be the same value at many points in time! So we’ll also need to call `retain_image` when we mark a current image as the “active” image, to ensure that it doesn’t get garbage collected when it is no longer the “next” image. Which means that we’ll need to call `release_image` one more time, on the previous “active” image, before we retain the new one.
+
+I won’t go too much into reference-counted memory management in this book, but it’s essentially a matter of balancing parentheses. Whenever we create or retain a value, we need to remember to release it later. And if we ever create a new reference to a value, we have to remember to retain it, and then to release it, once the reference changes or goes out of scope.
+
+Our program has two variables that can reference Janet values:
+
+```
+let potentialNextImage: Image | null;
+let currentImage: Image | null;
+```
+
+These values might be the same, or they might be different. But whenever we say `currentImage = potentialNextImage` — whenever we promote a newly compiled image to be the “current” program — we’re essentially taking another reference to the same Janet value. So we want to retain that image (and release the previous image).
+
+Remember, though, that we *don’t* want to retain something that comes directly from one of the call to `toodle_compile` or `toodle_start`, because they begin with a “reference count” of 1. We could change this, and make them begin with a reference count of 0, but then we would have to be very careful to retain them from JavaScript *before* we give control back to the Janet VM. Which is completely fine! And a reasonable, consistent way to decide to manage memory in Janet.
+
+Okay. Now that we’ve fixed the leaks, we’re basically done. But there’s one final detail of the implementation that’s worth mentioning.
+
+We have to parse the returned “list of lines” into a C++ struct, which Emscripten will automatically translate into a JavaScript object for us. But we’re parsing values that are produced, in part, by a script that Marley wrote. And Marley, as you know, is not to be trusted: even though a turtle is supposed to yield *lines*, Marley could have written turtles that misbehave, and yield arbitrarily crazy values.
+
+So in order to parse the results of the fiber invocations, we need to validate the values. And it’s going to be *much, much* easier to do that validation in Janet than it would be to do it from our C++ wrapper. So before we return anything into C++, we have to validate that all of the data we’re going to return is in the format that our C++ code expects it. And then in our C++ wrapper, we blindly trust that we have the correct shape of data.
+
+We could of course do the validation in C++ instead, and I think it even feels more correct to do that: we won’t need to rely on careful coordination between the Janet validator and the C++ parser that way. But it’s a trade-off, and it’s so much easier to write the validation logic in Janet that I would rather just be extra careful about keeping them in sync.
+
+The rest of our program is, well, the actual application — the JavaScript UI, the DSL for declaring turtles, the Emscripten bindings to allow us to speak C++ from JavaScript, the 3D turtle logo with eyes that track the mouse, etc. The full code is available online if you’re curious about the details, but we won’t go over much more of it.
+
+=> https://github.com/ianthehenry/toodle.studio is available online
+
+But there’s still one more *interesting* bit to talk about.
+
+It concerns the turtle DSL.
+
+Let’s consider this very simple program:
+
+```
+(var hue (/ 2 6))
+(toodle {:width 3 :speed 0}
+  (set (self :color) (hsv hue 1 1))
+  (+= hue 0.001)
+  (turn 0.08)
+  (+= (self :speed) 0.01))
+```
+
+This program creates a single turtle that draws an outward spiral.
+
+But that is not actually how I want to write that program. I’d rather write it like this instead:
+
+```
+(var hue (/ 2 6))
+(toodle {:width 3 :speed 0}
+  (set self.color (hsv hue 1 1))
+  (+= hue 0.001)
+  (turn 0.08)
+  (+= self.speed 0.01))
+```
+
+Look at that `self.field` notation. That isn’t Janet! What’s up with that?
+
+Well, there’s one more argument to `run-context`: `:expander`.
+
+`:expander` is a function that runs on every top-level form that takes the abstract syntax tree and returns a new one. We can use it to, essentially, wrap every top-level form in a custom macro.
+
+And that dot syntax? That’s just a macro that searches through the abstract syntax tree and rewrites symbols with dots in them, like `foo.bar` into `(foo :bar)` instead.
+
+That’s a pretty mild extension, but we could use this feature to create arbitrary Janet dialects, if we wanted to. We could add infix operators, or special syntax that doesn’t need to exist within a macro call.
+
+In fact, we could even replace the parser altogether, and design a language with whitespace-sensitive indentation that parses into normal Janet tuples. We could re-use the Janet compiler and runtime with a completely custom syntax, if we wanted to.
+
+But we’re not going to do that in this book.
+
+This book is just about done talking about embedding Janet. But this book would like to talk about one last detail before we bring the chapter to a close: what happens if Marley writes a function with an infinite loop?
+
+Sadly, the answer is that her entire browser tab will freeze.
+
+But *in general*, there is a function called `janet_interpreter_interrupt`, which will, umm, interrupt the interpreter. But of course, we need to call it from a separate thread: if the current thread is spinning in an infinite loop, there’s no way that we’ll be able to sneak a `janet_interpreter_interrupt` in there.
+
+Sadly implementing this in the browser is so difficult that I have to leave it as an exercise for the reader. You can, perhaps, create shared WebAssembly memory that you call into from a web worker… or perhaps you cannot. I could not, at least, in time to satisfy this book’s publisher. Who is me. It’s self-published. But I wanted to release this book instead of fighting with asynchronous browser APIs or undocumented Emscripten features. I’m sure you can understand.
+
+So just… don’t write infinite loops.
+
+=> chapter-11.gmi Chapter Eleven: Testing and Debugging →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
+

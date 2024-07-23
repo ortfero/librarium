@@ -1,0 +1,586 @@
+# Janet for Mortals
+
+## Chapter Twelve: Scripting
+
+I think that Janet is a *very good* scripting language. Janet scripts have almost no startup time, PEGs make ad-hoc text-wrangling easy and fun, and you can even compile Janet scripts to native executables if you want to share them with people who have never even heard of Janet.
+
+But in this chapter we’re going to talk about a couple of libraries that transform Janet from a very good scripting language into *the best* scripting language.
+
+First of all, I want to talk about a library called `sh`, which was written by a prolific Janetor named Andrew Chambers. `sh` is one of the few libraries that I would recommend installing globally, because it’s Just That Good:
+
+=> https://github.com/andrewchambers/janet-sh a library called sh
+=> https://acha.ninja/ Andrew Chambers
+
+```
+jpm install sh
+```
+
+But also because that way you can import it from any shebanged Janet script you write without having to set up a `project.janet` first.
+
+The core of the `sh` library is a macro called `$`, which executes a shell command:
+
+greet
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+($ echo "hey janet")
+
+./greet
+hey janet
+```
+
+But `$` supports a surprising amount of shell-like syntax. For example, you can use it set up a multi-process pipeline:
+
+greet
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+($ echo "hey janet" | tr "a-z" "A-Z")
+
+./greet
+HEY JANET
+```
+
+Just like in a real shell.
+
+Of course there’s no real reason to shell out to `echo` or `tr` like this in real life, since we can just call `print` and `string/ascii-upper`. But there are gonna be a lot of dumb examples in this chapter.
+
+`sh` also supports redirection, either to files:
+
+greet
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+($ echo "hey janet" >(file/open "output.txt" :w))
+($ cat output.txt)
+
+./greet
+hey janet
+```
+
+Or to Janet buffers:
+
+greet
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+(def output @"")
+($ echo "hey janet" >,output)
+
+(prin output)
+
+./greet
+HEY JANET
+```
+
+I used `prin` because `echo` already adds a newline.
+
+Although that’s sort of a silly redirection, because `janet-sh` includes another macro, `$<`, which runs a command and returns the output as a string:
+
+```
+(def output ($< echo "hey janet"))
+```
+
+Although I think that `$<_` is more useful — `$<_` is just like `$<`, but it strips trailing whitespace from its output.
+
+You can also redirect-append with `>>`, and you can redirect stdin with `<`. Just like a real shell.
+
+baby-names
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+(def baby-names `
+thaddeus
+leopold
+ezekiel
+`)
+
+($ sort <,baby-names | sed "s/^/name: /")
+
+./baby-names
+name: ezekiel
+name: leopold
+name: thaddeus
+```
+
+`$` raises an exception if any of the commands in its pipeline exits non-zero (in Bash terms: `sh` implicitly sets `pipefail`), and it always returns `nil`. But you can also use `$?` to check if a command succeeded — it will return `true` for exit status `0`, and `false` for anything else.
+
+janet -l sh
+
+```
+repl:1:> ($? grep "supercalifragilistic" /usr/share/dict/words)
+false
+```
+
+If you need more information than that, `sh` exports a macro called `run` that returns the numeric exit code of a command. It actually returns an *array* of exit codes, one for each command in a pipeline:
+
+```
+repl:2:> (run grep "supercali" /usr/share/dict/words)
+@[1]
+repl:3:> (run grep "supercal" /usr/share/dict/words | sort)
+supercalender
+supercallosal
+@[0 0]
+```
+
+Remember that you can still redirect stdout to a buffer when you’re using `$?` or `run` to grab the text as well, if you want to.
+
+`sh` also exports a function called `glob`. It’s a function, not a macro, so you have to pass it a string:
+
+run-tests
+
+```
+#!/usr/bin/env janet
+(use sh)
+
+(each file (glob "tests/*.janet" :x)
+  (printf "running %s" file)
+  ($ janet ,file))
+```
+
+And it returns an array of files that match the glob:
+
+```
+./run-tests
+running tests/bar.janet
+running tests/foo.janet
+```
+
+`:x` tells the glob to return the empty array if no files match the glob. The default behavior is to return `@["tests/*.janet"]`, just like Bash does. `:x` is like `shopt -s nullglob`.
+
+Because `glob` returns an array of strings, you’ll have to `splice` on its output in order to use it inside one of the `$` macros:
+
+janet -l sh
+
+```
+repl:1:> ($ echo ;(glob "tests/*.janet"))
+tests/bar.janet tests/foo.janet
+nil
+```
+
+`sh` won’t auto-split variables into multiple arguments, even when it sees a list.
+
+Finally, the `$` macros support a binary operator called `^`. `^` will concatenate strings together into a single argument:
+
+janet -l sh
+
+```
+repl:1:> (def hello "hello")
+nil
+repl:2:> ($ echo ,hello ^ world)
+helloworld
+nil
+```
+
+This can be handy for constructing file names and paths.
+
+Okay! You now know almost everything there is to know about `sh`. Let’s try it out!
+
+We’ll start small. Here’s a simple Bash script that checks for `.c` files without corresponding `.h` files:
+
+```
+for file in *.c; do
+  if [[ ! -e "$(basename "$file" .c).h" ]]; then
+    echo "$file is missing a header file"
+  fi
+done
+```
+
+We can rewrite that in Janet, using `^` notation:
+
+```
+(each file (glob "*.c")
+  (unless ($? test -e ($<_ basename ,file .c) ^ .h)
+    (print file " is missing a header file")))
+```
+
+Or with the more explicit:
+
+```
+(each file (glob "*.c")
+  (unless ($? test -e (string ($<_ basename ,file .c) ".h"))
+    (print file " is missing a header file")))
+```
+
+Which is more to type, but I find it easier for my brain to parse.
+
+Now, I know that wasn’t very interesting. That was a pretty contrived example.
+
+So let’s try a *real* shell script.
+
+Hmm.
+
+Here’s one I wrote forever ago that I’ve gotten a lot of mileage out of. It prints the description of a Nix package, because somehow there is no built-in command to do this:
+
+~/sd/nix/info
+
+```
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+nix-env -qaA "nixpkgs.$1" --json --meta \
+| jq -r '.[] | .name + " " + .meta.description,
+         "",
+         (.meta.longDescription | rtrimstr("\n"))'
+```
+
+We can port this into Janet pretty easily:
+
+nix-info
+
+```
+#!/usr/bin/env janet
+
+(use sh)
+
+($ nix-env -qaA nixpkgs. ^ (in (dyn *args*) 1) --json --meta
+ | jq -r `.[] | .name + " " + .meta.description,
+          "",
+          (.meta.longDescription | rtrimstr("\n"))`)
+```
+
+Three things to notice about this:
+
+* We can include arbitrary Janet expressions inside a `$` invocation, and as long as they’re wrapped in parentheses we don’t need to unquote them.
+* Janet’s `` `backtick` ``-quoted strings are a really nice way to sidestep shell quoting problems.
+* `(in (dyn *args*) 1)` is a whole lot more to type than `$1`.
+
+It works, though:
+
+```
+./nix-info git
+git-2.37.1 Distributed version control system
+
+Git, a popular distributed version control system designed to
+handle very large projects with speed and efficiency.
+```
+
+But is this any better than writing Bash? No. Not really. This is a platonic ideal shell script: start a process, pipe the output to another process, exit. Janet isn’t really bringing anything new to the table here.
+
+But I think it’s really impressive that the Janet implementation is not *worse* than the equivalent Bash script. Subprocess DSLs that I have seen in JavaScript and Python add a *lot* more noise.
+
+In fact, the only thing I don’t like about the Janet version is the argument handling — `(in (dyn *args*) 1)` is pretty messy looking. We could simplify this a little by wrapping it in a `main` function and reading the arguments from its parameters, but I’m going to propose an alternative approach:
+
+nix-info
+
+```
+#!/usr/bin/env janet
+
+(use sh)
+(import cmd)
+
+(cmd/def package (required :string))
+
+($ nix-env -qaA nixpkgs. ^ ,package --json --meta
+ | jq -r `.[] | .name + " " + .meta.description,
+          "",
+          (.meta.longDescription | rtrimstr("\n"))`)
+```
+
+`cmd` is a library for parsing command-line arguments. `(cmd/def package (required :string))` says that our executable takes one required positional argument, a string, and binds it to the symbol `package`.
+
+I wrote `cmd`, so I’m certainly biased, but I think that `sh` and `cmd` together provide a *better* interface for writing “shell scripts” than Bash does — or indeed any higher-level language. The above doesn’t *really* showcase what it can do, but as soon as we add a named argument:
+
+nix-info
+
+```
+#!/usr/bin/env janet
+
+(use sh)
+(import cmd)
+
+(cmd/def
+  package (required :string)
+  --name (flag))
+
+(defn query-name [name]
+  ($< nix-env -qa ,name --json --meta))
+
+(defn query-attr [attr]
+  ($< nix-env -qaA nixpkgs. ^ ,attr --json --meta))
+
+($ <(if name (query-name package) (query-attr package))
+   jq -r `.[] | .name + " " + .meta.description,
+          "",
+          (.meta.longDescription | rtrimstr("\n"))`)
+```
+
+Now we can type `./nix-info git` or `./nix-info git --name` or `./nix-info --name git`, and the `cmd` library will assign a boolean value to `name` based on whether or not the flag was specified.
+
+This is still extremely simple, but I hope that you can see how this scales better than the equivalent command-line argument parsing code in Bash. Of course you could write this in Bash, and the code wouldn’t even be too bad, since we’re not trying to parse named arguments that have values after them. But we could, with `cmd`.
+
+By using `cmd/def`, we also got an autogenerated `--help` flag, which, at the moment is pretty sparse:
+
+```
+./nix-info --help
+  ./nix-info STRING
+
+=== flags ===
+
+  [--help] : Print this help text and exit
+  [--name] : undocumented
+```
+
+Though by adding a few more annotations:
+
+```
+(cmd/def "Print the description of Nix derivation."
+  package (required ["<package>" :string])
+  --name (flag) "Query by name instead of attribute")
+```
+
+We can get slightly better `--help` output:
+
+```
+./nix-info --help
+Print the description of Nix derivation.
+
+  ./nix-info <package>
+
+=== flags ===
+
+  [--help] : Print this help text and exit
+  [--name] : Query by name instead of attribute
+```
+
+This is a very small taste of what `cmd` can do, and I’m not going to give an exhaustive description of it in this book. But for a slightly larger taste:
+
+```
+# named arguments start with a hyphen
+(cmd/def --foo (required :string))
+
+# positional arguments don't
+(cmd/def foo (required :number))
+
+# arguments can be optional
+(cmd/def --foo (optional :file))
+
+# you can specify multiple aliases for a named argument
+(cmd/def [--foo -f] (optional :string))
+
+# as well as a separate name to use for the Janet variable
+(cmd/def [bar --foo] :number)
+```
+
+`cmd` is a lot less interesting than `sh`, because it should — hopefully — just stay out of your way. The official documentation describes how to use it in great detail, but most of the scripts you write will probably just have a flag or two, and the above examples should be sufficient.
+
+=> https://github.com/ianthehenry/cmd The official documentation
+
+So: with the combined power of `sh` and `cmd`, we can actually replace a lot of shell scripts with Janet scripts. And by doing so we get saner error handling, we don’t have to worry about word-splitting, and we have full access to sequential and associative arrays that actually make sense.
+
+But we also have access to a superpower of Janet: PEGs.
+
+Writing scripts with PEGs is *so much nicer* than wrangling Awk or Sed invocations that I think it’s pretty hard to go back once you’ve done it a few times. And I say that as someone who *loves* Sed — and who almost tolerates Awk.
+
+So. With these three superpowers at our disposal — `sh`, `cmd`, and Janet’s native PEGs — let’s write a little project together.
+
+I want to try writing a little todo list in Janet. It will be very, very simple, but at the end we’ll have something that is actually *usable* and perhaps even *useful*. And it can serve as a starting point for a custom todo list app exactly tailored to your personal workflow.
+
+We’ll store our todo list in a plain text file that looks like this:
+
+```
+- [ ] this is a task to do
+- [x] this one is already done
+```
+
+This is a pretty simple file format — we could parse this with Sed no problem. But by writing this with PEGs, we’ll actually be able to support tasks that span multiple lines. Which I fully admit is not very useful, but it’s neat that we *can* do it.
+
+Our “app” will expose the following command line interface:
+
+* `to do` print the todo list
+* `to do 'some task'` add a new task
+* `to done` mark tasks completed
+
+This is a very barebones interface, but it’s a good starting point.
+
+When we print the todo list, we’ll strike out completed tasks, and word wrap any longer tasks to the width of your terminal. Like this:
+
+```
+- [x] a completed task
+- [ ] pretend like this is a task and
+      you have a very narrow terminal
+- [ ] a shorter task
+```
+
+But rather than writing our own line-wrapping function, we’ll just shell out to the standard `fold` command. And rather than querying the terminfo database directly, we’ll just shell out to `tput`.
+
+When you mark a task completed, we’ll actually show an interactive menu from which you can select tasks. And we’ll do that by just shelling out to `fzf`, which will even let us support crossing off multiple tasks at once.
+
+Of course we could implement all of this functionality in pure Janet, but by harnessing the power of `sh` we can implement it *very easily*. In fact this whole program — with nicely formatted output and `fzf`-powered interactive multi-select — will weigh under 100 lines.
+
+99 lines, to be exact:
+
+```
+#!/usr/bin/env janet
+
+(use sh)
+(import cmd)
+
+(defn strikethrough [text] (string "\e[9m" text "\e[0m"))
+
+(def todo-file (string/format "%s/todo" (os/getenv "HOME")))
+
+(def char-to-state {" " :todo "x" :done})
+(def state-to-char (invert char-to-state))
+
+(def task-peg (peg/compile
+  ~{:main (* (any (* :task (+ "\n" -1))) -1)
+    :state (cmt (* "- [" (<- (to "]")) "]") ,|(char-to-state $))
+    :text (/ (<- (to (+ "\n- [" -1))) ,string/trim)
+    :task (/ (* :state :text) ,|@{:state $0 :text $1})}))
+
+(defn parse-tasks []
+  (assert (peg/match task-peg (slurp todo-file))
+    "could not parse todo list"))
+
+(def cols (scan-number ($<_ tput cols)))
+
+(defn print-task [{:state state :text text}]
+  (def decorate (case state 
+    :done strikethrough 
+    identity))
+  (def prefix (string/format "- [%s] " (state-to-char state)))
+  (def indent (string/repeat " " (length prefix)))
+  (def wrap-width (- cols (length prefix)))
+  (def wrapped-text ($< fold <,text -s -w ,wrap-width))
+  (def lines (string/split "\n" wrapped-text))
+  (eachp [i line] lines
+    (print
+      (if (= i 0) prefix indent)
+      (decorate line))))
+
+(defn print-tasks [tasks]
+  (each task (sort-by |(in $ :state) tasks)
+    (print-task task)))
+
+(defn first-word [str]
+  (take-while |(not= $ (chr " ")) str))
+
+(defn save-tasks [tasks]
+  (def temp-file (string todo-file ".bup"))
+  (with [f (file/open temp-file :a)]
+    (each {:state state :text text} tasks
+      ($ printf -- "- [%s] %s\n" (state-to-char state) ,text >>,f)))
+  ($ mv ,temp-file ,todo-file))
+
+(cmd/defn to-done "cross something off" []
+  (def tasks (parse-tasks))
+  (def input @"")
+  (loop [[i {:state state :text text}] :pairs tasks 
+         :when (= state :todo)]
+    (buffer/push-string input
+      (string/format "%d %s" i text))
+    (buffer/push-byte input 0))
+
+  (when (empty? input)
+    (print "nothing to do!")
+    (os/exit 0))
+
+  (def output @"")
+  (def [exit-status] 
+    (run fzf <,input >,output --height 10 --multi --print0 --with-nth "2.." --read0))
+  (def selections
+    (case exit-status
+      0 (drop -1 (string/split "\0" output))
+      1 []
+      2 (error "fzf error")
+      130 []
+      (error "unknown error")))
+
+  (each selection selections
+    (def task-index (scan-number (first-word selection)))
+    (def task (in tasks task-index))
+    (set (task :state) :done)
+    (print-task task))
+
+  (unless (empty? selections)
+    (save-tasks tasks)))
+
+(defn append-task [text]
+  (with [f (file/open todo-file :a)]
+    (file/write f (string/format "- [ ] %s\n" text)))
+  (print-task {:state :todo :text text}))
+
+(cmd/defn to-do "add or list tasks"
+  [task (optional ["<task>" :string])]
+  (if task
+    (append-task task)
+    (print-tasks (parse-tasks))))
+
+(cmd/main (cmd/group "A very simple task manager."
+  do to-do
+  done to-done))
+```
+
+And that’s, you know, 99 *comfortably spaced* lines of code.
+
+I’m not going to go over the whole thing, because 99 lines is pretty short for a real program but pretty long for a program in a book. But I do want to hit the highlights.
+
+First off, we parse the todo list with a PEG.
+
+```
+(def task-peg (peg/compile
+  ~{:main (* (any (* :task (+ "\n" -1))) -1)
+    :state (cmt (* "- [" (<- (to "]")) "]") ,|(char-to-state $))
+    :text (/ (<- (to (+ "\n- [" -1))) ,string/trim)
+    :task (/ (* :state :text) ,|@{:state $0 :text $1})}))
+```
+
+This might look a little complicated at first, until you realize that it correctly parses hard-wrapped, multi-line tasks — something that’s fairly difficult to do with a plain old regular expression.
+
+That’s not very shelly, though; that’s just Janet. So let’s take a look at task pretty-printing:
+
+```
+(def cols (scan-number ($<_ tput cols)))
+
+(defn print-task [{:state state :text text}]
+  (def decorate (case state :done strikethrough identity))
+  (def prefix (string/format "- [%s] " (state-to-char state)))
+  (def indent (string/repeat " " (length prefix)))
+  (def wrap-width (- cols (length prefix)))
+  (def wrapped-text ($< fold <,text -s -w ,wrap-width))
+  (def lines (string/split "\n" wrapped-text))
+  (eachp [i line] lines
+    (print
+      (if (= i 0) prefix indent)
+      (decorate line))))
+```
+
+`fold` wraps text to the specified width, and `tput` can tell us how wide the terminal is — something that would otherwise require writing a native Janet module, because the standard library doesn’t expose this.
+
+To implement task selection, we construct a buffer of null-terminated strings that we pass to `fzf`. We use `run` to get the exit code, because `fzf` returns `130` if the user presses escape to cancel, and we want to handle that gracefully. Why `130`? No one knows.
+
+```
+(def output @"")
+(def [exit-status] (run fzf <,input >,output --height 10 --multi --print0 --with-nth "2.." --read0))
+(def selections
+  (case exit-status
+    0 (drop -1 (string/split "\0" output))
+    1 []
+    2 (error "fzf error")
+    130 []
+    (error "unknown error")))
+```
+
+This is a big departure from how I normally program. But I was able to hack up this todo list in, like, thirty minutes. If I weren’t using `fzf` to do all the heavy-lifting, I’d probably still be reading about curses bindings and ANSI escape codes right now. And if I had written this in pure shell, I’d still be working on the Sed script to parse multi-line tasks.
+
+This is the beauty of this kind of hybrid scripting: it’s quick, it’s dirty, but it *already works*. This program does nothing to protect against concurrent writes, it makes far more syscalls than it needs to, and it spawns processes without any concern for the overhead. But none of that really matters, for a program used interactively by a single person.
+
+Now, I don’t think that Janet can replace shell scripts altogether. `sh` and `cmd` make a pretty good argument, but Bash still has a lot to recommend it: there’s no equivalent of `trap EXIT` in Janet, nor is there an analog of the extremely-useful `cp foo.bar{,.bup}` expansion shorthand. It’s a lot more verbose to set and reference environment variables in Janet, and there’s no `~/foo` or `~user/foo` shorthand for specifying home directories. You can’t spawn background jobs at all, and Janet has no job control facilities.
+
+So I don’t expect Janet to displace Bash for you entirely. But I think it can absolutely displace Perl, or Python, or Ruby, or whatever higher-level scripting language you currently reach for when your shell scripts get too long.
+
+=> chapter-13.gmi Chapter Thirteen: Macro Mischief →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.

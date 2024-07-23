@@ -1,0 +1,892 @@
+# Janet for Mortals
+
+## Chapter Thirteen: Macro Mischief
+
+All the way back in Chapter Three, we looked at the following macro:
+
+```
+(defmacro each-reverse [identifier list & body]
+  ~(do
+    (var i (- (length ,list) 1))
+    (while (>= i 0)
+      (def ,identifier (in ,list i))
+      ,;body
+      (-- i))))
+```
+
+And we talked about two problems that it has.
+
+The first is that we can’t use `i` as the name of our looping variable:
+
+```
+(each-reverse i [1 2 3 4 5]
+  (print i))
+```
+
+Because the macro uses `i` as the index variable already:
+
+```
+(do
+  # from the macro itself
+  #    ↓
+  (var i (- (length [1 2 3 4 5]) 1))
+  (while (>= i 0)
+    # from the macro's arguments
+    #    ↓
+    (def i (in [1 2 3 4 5] i))
+    (print i)
+    (-- i)))
+```
+
+The second is that the abstract syntax tree that we call `list` actually appears in two places in the expansion:
+
+```
+(each-reverse x (do (os/sleep 1) [1 2 3 4 5])
+  (print x))
+```
+
+Which means that it’s ultimately going to be evaluated twice, duplicating work and possibly even performing side effects multiple times:
+
+```
+(do
+  #                    first sleep
+  #                         ↓
+  (var i (- (length (do (os/sleep 1) [1 2 3 4 5])) 1))
+  (while (>= i 0)
+    #             second sleep
+    #                  ↓
+    (def x (in (do (os/sleep 1) [1 2 3 4 5]) i))
+    (print x)
+    (-- i)))
+```
+
+Fixing the second problem is pretty easy: we can just evaluate `list` once, and store the result in a variable:
+
+```
+(defmacro each-reverse [identifier list & body]
+  ~(do
+    (def list ,list)
+    (var i (- (length list) 1))
+    (while (>= i 0)
+      (def ,identifier (in list i))
+      ,;body
+      (-- i))))
+```
+
+Except, well, that just made the first problem worse. Now not only is `i` off limits, but we’ve shadowed the word `list` as well.
+
+It’s not hard to fix this, but I think that the fix is pretty confusing the first time you see it.
+
+The trick is that, instead of using identifiers like `i` and `list`, we’re going to generate new, unique identifiers that won’t clash with any other symbols.
+
+We do this with a function called `gensym`.
+
+```
+repl:1:> (gensym)
+_000001
+```
+
+`_000001` is a unique identifier that has not been used anywhere else in the program before. Janet *knows* it’s unique because, remember, all symbols are stored in an interning table, and `gensym` consults that table to make sure it’s really giving you a unique symbol every time you call it. If Janet had parsed a symbol called `_000001` in your program already, it wouldn’t return `_000001`:
+
+```
+repl:1:> (def _000001 'hi)
+hi
+repl:2:> (gensym)
+_000002
+```
+
+See?
+
+Yes, you could deliberately construct a symbol called `_000001` *dynamically* in your program in such a way that it doesn’t get into the interning table until *after* you call `gensym`, if you really wanted to. `gensym` returns a unique symbol at the time that it’s called, but it’s still possible for you to conspire to create a collision afterwards.
+
+We can use gensym to create names for the variables in our macro. Instead of `i`, we’ll use something like `_000001`. And instead of `list`, we’ll use something like `_000002`.
+
+And here’s where it gets weird.
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (- (length ,$list) 1))
+    (while (>= ,$i 0)
+      (def ,identifier (in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+```
+
+So `$list` is a symbol. The symbol `(symbol "$list")`. I wrote that in my program; that is a real symbol that exists.
+
+But `$list` is also a variable name — or well, the name of an immutable binding, but whatever. We’ll drop the pedantry for a second; this is confusing enough already.
+
+`$list` is a variable, and `$list` happens to be assigned to a value that is also a symbol — a symbol like `_000001`.
+
+The dollar sign prefix is just a convention; it stands for $ymbol — the value of `$list` is the symbol that will eventually hold the value of `list`. `list`, remember, is an abstract syntax tree. So we have to unquote `list` to put that abstract syntax tree into the abstract syntax tree that we’re returning from our macro. And we have to unquote `$list` so that we make a variable called `_000001` instead of a variable called `$list`.
+
+So if we examine the expansion of our original problematic invocation:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (- (length ,$list) 1))
+    (while (>= ,$i 0)
+      (def ,identifier (in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+
+(each-reverse i [1 2 3 4 5]
+  (print i))
+```
+
+We’ll find something a lot like this:
+
+```
+(do
+  (def _000001 [1 2 3 4 5])
+  (var _000002 (- (length _000001) 1))
+  (while (>= _000002 0)
+    (def i (in _000001 _000002))
+    (print i)
+    (-- _000002)))
+```
+
+`i` still shows up, because that’s the name we chose for the looping variable when we *called* the macro. But there’s no more conflict with the `i` variable that the macro used internally to store the index — that has been replace with a harmless `_000002`.
+
+So let’s notice a few things about this.
+
+* It’s, like, ten times harder to read `(def ,$list ,list)` than it was to read `(def list ,list)`.
+
+  Yeah, and it’s probably not going to get better while you’re reading this book. But after you write this a few times, you won’t have to think about it at all.
+
+* It’s really easy to *forget* to do this, and accidentally write a fragile macro.
+
+  At first. You do get used to it, though, and `gensym`ing quickly becomes second nature. Which isn’t to say you won’t forget, occasionally — you will — but it will get less and less common with practice.
+
+* It’s really hard to *detect* fragile macros like this, because only very specific inputs are problematic.
+
+These problems have caused a lot of people to spend a lot of time thinking about ways to improve on this state of affairs, and there are multiple different “hygienic” macro systems designed to prevent these sorts of mistakes.
+
+But those techniques are out of scope for this book. This is a book about Janet, and Janet macros are *filthy*. Raw, unfiltered syntax tree transformations. They are very powerful, and they are very simple, and they are very easy to shoot yourself in the foot with.
+
+One way that we can reduce the likelihood of shooting ourselves in the foot is to actually look at the macro expansions. We’ve seen how to do this in the repl with `macex1`, but the output is pretty hard to read, and it’s easier to just test that the macro works without looking at its expansion.
+
+But there’s a better way to test a macro expansion: Judge’s `test-macro`:
+
+```
+(use judge)
+
+(test-macro (each-reverse i [1 2 3 4 5] (print i)))
+```
+
+After we run this, Judge will fill in the expansion of the macro:
+
+```
+(test-macro (each-reverse i [1 2 3 4 5] (print i)) 
+  (do
+    (def <1> [1 2 3 4 5])
+    (var <2> (- (length <1>) 1))
+    (while
+      (>= <2> 0)
+      (def i (in <1> <2>))
+      (print i)
+      (-- <2>))))
+```
+
+Judge’s `test-macro` code formatting is pretty basic, but it’s much better than dumping it all on one line. And notice that the gensym’d symbols are replaced by the shorter `<1>` and `<2>` identifiers, which will be stable across multiple invocations (whereas the actual underlying symbols will depend on the total number of times `gensym` has run since the Janet VM started running).
+
+`test-macro` makes it easy to inspect macro expansions, but it has a side benefit as well: it can serve as auto-generated documentation about the behavior of complicated macros. And you can also use it if you have a question about the behavior of a built-in macro. For example, if you want to sanity check how `->>` works:
+
+```
+(test-macro (->> foo (map f) (filter pred)) 
+  (filter pred (map f foo)))
+```
+
+Using your source files as a repl like this is—
+
+Okay, sorry, my editor is telling me that I’m not allowed to go on any teary-eyed tangents about the joys of testing in this chapter. We already did that, back in Chapter Eleven. Let’s get back to macros.
+
+So now that we’ve covered the *basic* errors that you can make while writing a macro, let’s move on to some of the *advanced* errors.
+
+Because, as complicated as our macro definition has become, it’s still a little bit fragile.
+
+```
+(each-reverse i [1 2 3 4 5]
+  (print i))
+```
+
+That works great. But this:
+
+```
+(def length 10)
+(each-reverse i [1 2 3 4 5]
+  (print i))
+```
+
+Does *not*. And it’s easy to see why, when we look at the expansion:
+
+```
+(def length 10)
+(do
+  (def _000001 [1 2 3 4 5])
+  (var _000002 (- (length _000001) 1))
+  (while (>= _000002 0)
+    (def i (in _000001 _000002))
+    (print i)
+    (-- _000002)))
+```
+
+Our macro expansion includes the symbol `length`. But we really meant the function *called* `length` from the standard library. But that’s not what we said: we said the *symbol* `length`, whatever that might be at the place where our macro was expanded.
+
+The fix is easy, though: by unquoting `length`, we actually include the function itself in our final abstract syntax tree:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (- (,length ,$list) 1))
+    (while (>= ,$i 0)
+      (def ,identifier (in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+```
+
+Now if we test our macro expansion, we’ll wind up with something like this:
+
+```
+(def length 10)
+(do
+  (def _000001 [1 2 3 4 5])
+  (var _000002 (- (<function length> _000001) 1))
+  (while (>= _000002 0)
+    (def i (in _000001 _000002))
+    (print i)
+    (-- _000002)))
+```
+
+But wait a minute. We fixed `length`, but that’s just one function! And it’s not the only function here. There’s also `-` — that’s a function in Janet, remember. And `>=`, and `in`. All functions. So we *actually* have to write:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (,- (,length ,$list) 1))
+    (while (,>= ,$i 0)
+      (def ,identifier (,in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+```
+
+Okay. At this point we’re unquoting more things than we’re quoting, and we could consider abandoning the quasiquote syntax altogether:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ['do
+    ['def $list list]
+    ['var $i [- [length $list] 1]]
+    ['while [>= $i 0]
+      ['def identifier [in $list $i]]
+      ;body
+      ['-- $i]]])
+```
+
+I find that harder to read, personally, but you *could* write a macro that way if you wanted to.
+
+But, well, wait a minute. We covered all the functions — but what about these macros? What about `while`? What about `def`?? What if someone wants to use this macro somewhere that they’ve redefined `while`?
+
+Well, you can’t redefine `while`, actually. `while` is a “special form,” a language primitive. There no variable called `while` for you to shadow:
+
+```
+repl:1:> (print while)
+repl:1:1: compile error: unknown symbol while
+```
+
+And even if you we *try* to shadow `while`, `(while)` will still mean to the special built-in:
+
+```
+repl:1:> (var while 3)
+3
+repl:2:> (while (> while 0) (print while) (-- while))
+3
+2
+1
+nil
+```
+
+`while` isn’t the only symbol that’s special-cased like this. There are, in fact, 13 “special forms” in Janet:
+
+* `do`, `upscope`
+* `def`, `var`
+* `set`
+* `fn`
+* `while`, `if`, `break`
+* `quote`, `quasiquote`, `unquote`, `splice`
+
+Everything in Janet — every function, every macro, every everything — is ultimately made out of those 13 building blocks. Or, well, or it’s written in C. Lots of stuff is written in C.
+
+But returning to our macro:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (,- (,length ,$list) 1))
+    (while (,>= ,$i 0)
+      (def ,identifier (,in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+```
+
+There is still one symbol here that is *not* a special form.
+
+`--` is a normal macro, and if someone shadowed it and then used our `each-reverse` function, it wouldn’t work correctly.
+
+```
+(def -- :minus-minus)
+(each-reverse i [1 2 3]
+  (print i))
+```
+
+And it isn’t obvious that that’s the case, right? I mean, we wrote `each-reverse`, so we know that the macro expands to include `--`. But if we were publishing this macro as part of a library, we don’t really want the users of our library to have to know anything about the expansion of the macro. We want it to just work, always and transparently, just like functions do.
+
+Now, the unquoting trick that we used on functions doesn’t exactly work on macros. If you unquote a macro, it doesn’t unquote to a *macro* — it unquotes to the abstract-syntax-tree-transforming function that backs the macro. But we don’t want to call that function at runtime, when we eventually run the expanded code — we want to call that function at compile-time.
+
+So there’s a sort of canonical way to do this, which is to use a macro called `as-macro`. `as-macro` is a trivial macro that takes a function and some arguments and calls the function at compile time. It lets us “unquote” macros, and we can use it to fix this macro definition:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (,- (,length ,$list) 1))
+    (while (,>= ,$i 0)
+      (def ,identifier (,in ,$list ,$i))
+      ,;body
+      (as-macro ,-- ,$i))))
+```
+
+Except, of course, that we have only moved the problem.
+
+If someone shadows `as-macro`, we’re exactly back to where we started. `as-macro` is not a special form, so it is *possible* to shadow it.
+
+And look: no one is going to shadow `as-macro`. I know that. You know that. If someone shadows `as-macro` and then complains that your macros don’t work, that’s not… that’s just not a reasonable thing to try to protect against.
+
+But still. We’ve already come this far. Let’s make this thing *airtight*.
+
+So macros are just functions, right? Functions from abstract syntax trees to abstract syntax trees. And we can just directly call those functions at compile time — we don’t need to go through `as-macro` at all.
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  # we have to make a new function binding,
+  # because -- is a macro binding, and we
+  # want to call it as a function
+  (def fn-- --)
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (,- (,length ,$list) 1))
+    (while (,>= ,$i 0)
+      (def ,identifier (,in ,$list ,$i))
+      ,;body
+      ,(fn-- $i))))
+```
+
+And look: don’t do this. This is a fun exercise designed to show you that it is *possible* to write macros that are entirely insulated from their expanding environment.
+
+But you shouldn’t actually write macros this defensively. We jumped the shark a few pages ago. You *definitely* shouldn’t worry about someone shadowing `as-macro`. And you probably shouldn’t even worry about writing someone shadowing `--` — it’s just not worth spending the time to defend against.
+
+But there is still a very good reason to understand how to write macros that are indifferent to the environment in which they’re used.
+
+The reason to care about all of this is that these techniques let us write macros that refer to *private* functions — functions that don’t exist at all in the environment in which the macro is used.
+
+We could, for example, write our own version of the `++` macro:
+
+custom-macros.janet
+
+```
+(defn- plus-one [x]
+  (+ x 1))
+
+(defmacro plus-plus [variable]
+  ~(set ,variable (plus-one ,variable)))
+```
+
+And then use it from another file:
+
+main.janet
+
+```
+(import ./custom-macros)
+
+(var x 0)
+(custom-macros/plus-plus x)
+(print x)
+```
+
+But that would, of course, give us an error:
+
+```
+janet main.janet
+main.janet:4:1: compile error: unknown symbol plus-one
+```
+
+Because `(custom-macros/plus-plus x)` expands to `(set x (plus-one x))`, and `plus-one` is not in scope. And neither is `custom-macros/plus-one` — we defined it as a private function, after all.
+
+But by unquoting the private `plus-one` function, we can still refer to it from within our macro’s expansion:
+
+custom-macros.janet
+
+```
+(defn- plus-one [x]
+  (+ x 1))
+
+(defmacro plus-plus [variable]
+  ~(set ,variable (,plus-one ,variable)))
+
+janet main.janet
+1
+```
+
+There’s not really a reason to write a “private macro,” because you can just write a private function instead and call that, like we did in the `fn--` example. But you can use this to refer to otherwise *public* macros without needing to know exactly what name they’re bound to in the calling environment — be it `foo/my-macro` or just `my-macro`. You can use `as-macro` to paper over those naming differences, because you know that `as-macro` is always going to be called `as-macro`.
+
+Alright. Now let’s go back to a reasonable version of our macro:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (def $list (gensym))
+  (def $i (gensym))
+  ~(do
+    (def ,$list ,list)
+    (var ,$i (- (,length ,$list) 1))
+    (while (>= ,$i 0)
+      (def ,identifier (in ,$list ,$i))
+      ,;body
+      (-- ,$i))))
+```
+
+As you can see this assumes that `-`, `>=`, `in`, and `--` exist with their normal definitions in the calling environment. I still unquoted `length`, because I think that’s a common variable name. I’ll also unquote functions like `tuple` or `struct`. There’s an element of human judgment here.
+
+Note that sometimes you actually *shouldn’t* unquote functions, even if you can. For example, there’s a macro in the standard library called `+=`. It’s defined like this:
+
+```
+(defmacro += [x n]
+  ~(set ,x (,+ ,x ,n)))
+```
+
+And that’s actually really annoying!
+
+If we *shadow* the function called `+` — say, because we want to overload it work over tuples — then `+=` no longer does what I would expect it to. I want it to be the case that `(+= x 1)` is short for `(set x (+ x 1))`, but it’s not. It’s short for `(set x (<function +> x 1))`. It always invokes the `+` from root-env, even when we have a different `+` in scope.
+
+So this is a case where I think it’s better to be deliberately unhygienic.
+
+So, okay. We’ve written a reasonable macro. Now let’s make it look a little nicer.
+
+It’s pretty common for macros to start by declaring a bunch of `gensym`’d variables, and there’s a helper macro that makes that a little bit easier. It’s called `with-syms`, and we can use it to replace our explicit `gensym` calls with this:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (with-syms [$list $i]
+    ~(do
+      (def ,$list ,list)
+      (var ,$i (- (,length ,$list) 1))
+      (while (>= ,$i 0)
+        (def ,identifier (in ,$list ,$i))
+        ,;body
+        (-- ,$i)))))
+```
+
+It’s also common to use `let` to bind those temporary variables to their corresponding abstract syntax trees, so that we don’t need the explicit `do`:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (with-syms [$list $i]
+    ~(let [,$list ,list]
+      (var ,$i (- (,length ,$list) 1))
+      (while (>= ,$i 0)
+        (def ,identifier (in ,$list ,$i))
+        ,;body
+        (-- ,$i)))))
+```
+
+Although in this case `$i` is going to be a variable, not a binding, so it has to stay out of the `let`. But that still saved us one line.
+
+You’ll see this pattern a lot when you’re writing macros:
+
+```
+(defmacro something [foo bar]
+  (with-syms [$foo $bar]
+    ~(let [,$foo ,foo
+           ,$bar ,bar]
+      ...)))
+```
+
+So it’s a good idea to try to write it once or twice so that it makes sense.
+
+I think that this final version is a pretty good macro:
+
+```
+(defmacro each-reverse [identifier list & body]
+  (with-syms [$i $list]
+    ~(let [,$list ,list]
+      (var ,$i (,dec (,length ,$list)))
+      (while (>= ,$i 0)
+        (def ,identifier (in ,$list ,$i))
+        ,;body
+        (-- ,$i)))))
+```
+
+You could unquote a little more, you could expand the `--` macro ahead of time, but I think that’s how I would write this one.
+
+In fact, that’s how I *did* write that macro, all the way back in Chapter One. Remember that? This was the code that I showed to try to scare you away from Janet before you had a chance to fall in love. Not so scary now, is it?
+
+So let’s try something scarier.
+
+Back in Chapter Eight, I presented a hypothetical macro designed to loosely mimic JavaScript’s `class` syntax:
+
+```
+(class Counter
+  constructor (fn [self] (set (self :_count) 0))
+  add (fn [self amount] (+= (self :_count) amount))
+  increment (fn [self] (:add self 1))
+  count (fn [self] (self :_count)))
+```
+
+And now that we understand `gensym`, we can actually *write* such a macro. Like this:
+
+```
+(defmacro class [name & methods]
+  (def proto @{})
+  (var constructor nil)
+
+  (each [name impl] (partition 2 methods)
+    (if (= name 'constructor)
+      (set constructor impl)
+      (put proto (keyword name) impl)))
+
+  (with-syms [$proto $constructor]
+    ~(def ,name 
+      (let [,$proto ,proto
+            ,$constructor ,constructor]
+        (fn [& args]
+          (def self (,table/setproto @{} ,$proto))
+          (,$constructor self ;args)
+          self)))))
+```
+
+It’s a bit more complicated, but I think you’re ready for it.
+
+First off, we use `partition` to chunk the input into pairs — so given a list like `['foo 1 'bar 2 'baz 3]`, it’ll give us `[['foo 1] ['bar 2] ['baz 3]]`. Then we iterate over those pairs, convert symbols like `'add` into keywords like `:add`, and then stick them into a table. Except for the symbol `constructor`, which is special-cased.
+
+After the loop runs, we’ll have a table from keywords to *abstract syntax trees*. Note that we haven’t evaluated the functions yet! They’re just syntax trees at this point, so our `proto` table will look like this:
+
+```
+@{:add ['fn '[self amount] ['+= ['self :_count] 'amount]]
+  :increment ['fn '[self] [:add 'self 1]]
+  :count ['fn '[self] ['self :_count]]}
+```
+
+Similarly, `constructor` is not a constructor *function* — it’s an abstract syntax tree that will *become* the constructor function after we evaluate it.
+
+```
+['fn '[self] ['set ['self :_count] 0]]
+```
+
+We can’t evaluate these abstract syntax trees directly, but we *can* return them from our macro for Janet to evaluate later. We have to make sure to only evaluate them once, so we use `with-syms` to mint temporary names to store the evaluated results in.
+
+The rest is hopefully straightforward. Or at least… tractable. The final expansion looks something like this:
+
+```
+(def Counter
+  (let [_000001 @{:add (fn [self amount] (+= (self :_count) amount)) 
+                  :count (fn [self] (self :_count))
+                  :increment (fn [self] (:add self 1))}
+        _000002 (fn [self] (set (self :_count) 0))]
+    (fn [& args]
+      (def self (<cfunction table/setproto> @{} _000001))
+      (_000002 self (splice args)) 
+      self)))
+```
+
+So the prototype is evaluated once, and then constructor function is evaluated once, and then we create a function that creates a new table, sets its prototype, calls the constructor function, and then finally returns the table. And we call that function `Counter`.
+
+That wasn’t too bad, right?
+
+Because we’re manipulating *syntax trees*, we could actually go a little further. We could ditch the `fn`, and implicitly include `self`, so that we just write something like this instead:
+
+```
+(class Counter
+  (constructor [] (set (self :_count) 0))
+  (add [amount] (+= (self :_count) amount))
+  (increment [] (:add self 1))
+  (count [] (self :_count)))
+```
+
+I’m not saying that’s *better*, but it’s a thing that we could do. We’d have to go in and modify the inputs so that we still *returned* something like `(fn [self] ...)`, but we don’t have to take that as an argument.
+
+We could also add some kind of `extends` syntax for subclassing, if we wanted to. We could do anything! It’s just a question of manipulating abstract syntax trees. *Carefully* manipulating abstract syntax trees — don’t forget about the `gensym`ing and the function unquoting.
+
+Alright. At this point, I think that you’re ready to go out into the world and write macros safely and robustly. But before we leave, I want to talk about “abstract syntax trees.”
+
+I’ve used that term a lot, but I never actually explained what I meant by it. After all, the things I’m calling abstract syntax trees in one place could be safely called symbols or tuples in other places. Because that’s what they are.
+
+Back in Chapter One, we talked about all the different values of Janet. And we talked about them as normal values and data structures. But every Janet value is, simultaneously, an abstract syntax tree. And all I mean by that is that you can pass *any* Janet value to the `compile` function, and it will give you back a nullary function that does *something* with it.
+
+But what, exactly? What does it mean for a struct to be an abstract syntax tree? Or a buffer? How does that work?
+
+Well, let’s find out. We’ll go over all of the values of Janet one more time, and consider them no longer as *regular* values, but as “abstract syntax trees” representing Janet programs.
+
+We’ll start simple. *Most* values just evaluate to themselves. This includes simple “atomic” values like numbers, strings, `nil`, booleans, and keywords:
+
+values
+
+```
+repl:1:> ((compile "hello"))
+"hello"
+repl:2:> ((compile 123))
+123
+```
+
+Functions and cfunctions *also* evaluate to themselves — that’s why we were able to unquote functions earlier in this chapter.
+
+functions
+
+```
+repl:3:> ((compile pos?))
+<function pos?>
+repl:4:> ((compile int?))
+<cfunction int?>
+```
+
+And so do fibers, which is a little bit weird. It’s weird because fibers are *mutable*: if you write a macro that returns an abstract syntax tree that contains a fiber, then that’s going to be the *same* fiber every time you call it:
+
+```
+repl:5:> (def count (coro (yield 1) (yield 2) (yield 3)))
+<fiber 0x600003FBC1C0>
+repl:6:> (defmacro counter [] ~(do (each x ,count (print x))))
+<function counter>
+repl:7:> (counter)
+1
+2
+3
+nil
+repl:8:> (counter)
+nil
+```
+
+Functions are mutable too, in a way — they can close over variables or mutable values, such that they behave differently every time they’re called. But fibers feels more “obviously” mutable to me.
+
+Abstract types and pointers *also* evaluate to themselves, always, even if the underlying type is mutable.
+
+```
+repl:9:> (def peg (peg/compile "abc"))
+<core/peg 0x6000037BC340>
+repl:10:> ((compile peg))
+<core/peg 0x6000037BC340>
+```
+
+Symbols are the first things that *don’t* evaluate to themselves. Symbols evaluate to, well, a lookup of that symbol.
+
+```
+repl:11:> (compile 'foo)
+@{:error "unknown symbol foo"}
+repl:12:> ((compile 'peg))
+<core/peg 0x6000037BC340>
+```
+
+If you want to evaluate the symbol itself, then you have to quote it:
+
+```
+repl:12:> ((compile '(quote foo)))
+foo
+```
+
+Or, more cryptically:
+
+```
+repl:13:> ((compile ''peg))
+peg
+```
+
+Sometimes you’ll want to write macros that take symbols as inputs and return the actual symbols themselves, not the values they become. To do this, you need to explicitly `quote` them:
+
+```
+repl:14:> (defmacro symbolton [sym val] ~{(quote ,sym) ,val})
+<function symbolton>
+repl:15:> (symbolton x 1)
+{x 1}
+```
+
+I think that’s the most explicit way to write this, but once you’re more comfortable with quasiquoting, you might prefer the more cryptic:
+
+```
+(defmacro symbolton [sym val] {~',sym val})
+```
+
+One of my, umm, favorite bits of Janet is `|~',$`, which is an anonymous function that returns its argument as a quoted form — useful for mapping over a list of symbols and quoting each of them. Spelled out more explicitly, it’s just `(fn [$] ~(quote ,$))`.
+
+Okay. Continuing onward: tuples become function invocations:
+
+```
+repl:17:> ((compile ['+ 1 2]))
+3
+repl:18:> ((compile ~(+ 1 2)))
+3
+```
+
+Although the first argument can be something other than a symbol. It could be an actual function:
+
+```
+repl:19:> ((compile [+ 1 2]))
+3
+repl:20:> ((compile ~(,+ 1 2)))
+3
+```
+
+Or it could be any other “callable” value:
+
+```
+repl:21:> ((compile [{:foo 123} :foo]))
+123
+```
+
+But wait a minute.
+
+Tuples become invocations. But what if we just want to *return* a tuple?
+
+Well, I have somehow managed to skirt this fact for this entire book, but there are actually *two* kinds of tuples in Janet: bracketed tuples and parenthesized tuples.
+
+Confusingly, you make a *parenthesized tuple* using square brackets, like `[1 2 3]`, or by quoting parentheses, like `'(1 2 3)`, or by using the `tuple` function.
+
+```
+repl:22:> [1 2 3]
+(1 2 3)
+repl:23:> '(1 2 3)
+(1 2 3)
+repl:24:> (tuple 1 2 3)
+(1 2 3)
+```
+
+And so far all the tuples we’ve been compiling have been parenthesized tuples.
+
+But you can make *bracketed* tuples by quoting brackets, or by using the `tuple/brackets` function:
+
+```
+repl:25:> '[1 2 3]
+[1 2 3]
+repl:26:> (tuple/brackets 1 2 3)
+[1 2 3]
+```
+
+You will probably only encounter bracketed tuples when you’re writing macros — apart from `compile`, they behave identically to normal, “parenthesized” tuples at runtime.
+
+You can inspect the type of the tuple like this:
+
+```
+repl:27:> (tuple/type '(1 2 3))
+:parens
+repl:28:> (tuple/type '[1 2 3])
+:brackets
+```
+
+When you compile a bracketed tuple, you get a regular, parenthesized tuple back:
+
+```
+repl:29:> ((compile '[1 2 3]))
+(1 2 3)
+```
+
+Which makes sense: evaluating the abstract syntax tree `'[1 2 3]` does exactly the same thing that typing the characters `[1 2 3]` into a text file would do.
+
+Note that, when you’re compiling such tuples, every *element* in the tuple is treated as an abstract syntax tree as well. It also gets compiled according to the rules that we’re setting out here:
+
+```
+repl:30:> ((compile (tuple/brackets [+ 1 2] 4)))
+(3 4)
+```
+
+The same is true for arrays. Every element of the array is interpreted as an abstract syntax tree:
+
+```
+repl:31:> (def foo @[1 [+ 1 1] 3])
+@[1 (<function +> 1 1) 3]
+repl:32:> ((compile foo))
+@[1 2 3]
+```
+
+But note that this will always return a new array, even if there’s nothing to “evaluate” inside of it:
+
+```
+repl:33:> (def bar @[])
+@[]
+repl:34:> (= bar ((compile bar)))
+false
+```
+
+Which makes sense: typing `@[]` into a file *also* always creates a new array.
+
+Structs evaluate their keys and their values as abstract syntax trees, and return a struct containing the results of that evaluation:
+
+```
+repl:35:> ((compile {'+ 1}))
+{<function +> 1}
+```
+
+And tables do the same thing, but, like arrays, they always return a *new* table:
+
+```
+repl:36:> ((compile @{''plus '+}))
+@{plus <function +>}
+```
+
+Note that if a struct or a table has a prototype, it is completely ignored during compilation.
+
+Finally, buffers — mutable strings — evaluate to copies of themselves:
+
+```
+repl:37:> (def hello @"hello")
+@"hello"
+repl:38:> ((compile hello))
+@"hello"
+repl:39:> (= hello ((compile hello)))
+false
+```
+
+And those are all of the values of Janet. Again.
+
+Every value is a valid argument to the `compile` function. Every value, if given the chance, can become a brand new Janet program. We have witnessed the duality between *code* and *data*, and we have emerged enlightened.
+
+Or, well, I shouldn’t speak for you, I guess.
+
+Do you feel enlightened?
+
+Did you get anything out of this?
+
+Has this book made you better, or wiser, or stronger?
+
+Has it inspired you to give Janet a try?
+
+Let me know in the comments.
+
+Er, the (say) function, that is.
+
+The End
+
+))))))((((((
+
+If you liked this book, you might like my blog, or my social media presence.
+
+=> https://ianthehenry.com/ my blog
+=> https://twitter.com/ianthehenry social media presence

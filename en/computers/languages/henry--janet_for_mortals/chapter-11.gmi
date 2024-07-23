@@ -1,0 +1,648 @@
+# Janet for Mortals
+
+## Chapter Eleven: Testing and Debugging
+
+I know that you’ve been looking forward to this chapter the whole book.
+
+Sure, compile-time metaprogramming or whatever is fine, but when do we get to talk about *automated test suites*? You haven’t even *thought* about skipping this one.
+
+I hope we can forego the spiel about the importance of testing — we’re both adults here, and I’m going to assume that if you’ve ever worked on a codebase in a dynamically typed language for longer than six weeks, you understand the value of a comprehensive automated test suite and an ergonomic testing framework.
+
+But we actually don’t need any test framework at all to start writing tests in Janet. `jpm` comes with a `test` subcommand that just works out of the box: by default, `jpm test` will recursively search a directory called `test/` for any `.janet` files, and then it will compile and run them, and check if any of them exit non-zero.
+
+For example:
+
+test/math.janet
+
+```
+(assert (= (+ 2 2) 3))
+
+jpm test
+running test/math.janet ...
+error: assert failure in (= (+ 2 2) 3)
+  in _thunk [test/math.janet] (tailcall) on line 1, column 1
+non-zero exit code in test/math.janet: 1
+Failing test scripts: 1
+```
+
+That’s all it takes to write a test!
+
+Or, well, we’ll probably want to test something that we actually wrote:
+
+src/math.janet
+
+```
+(defn add [x y] (+ x y))
+```
+
+test/math.janet
+
+```
+(use /src/math)
+
+(assert (= (add 2 2) 4))
+```
+
+`/src/math` is a path relative to the *current working directory*. You don’t want to use working-directory-relative imports in actual library code, because you have no idea what the current working directory will be when your code runs. But for test code, it works great, and means that we can import using the same paths from all of our scripts.
+
+For very simple programs, a few assertions in a file like this is probably sufficient. But I don’t usually write tests for very simple programs. I usually write tests for complex programs, and I don’t think that this is a very nice way to test complex programs.
+
+For starters, this type of test stops as soon as we reach the first failing assertion in each file. But sometimes it’s useful to see *all* failing tests, not just the first one. “Run a script and look at the exit code” doesn’t leave a lot of room for the sort of granular error-handling that would be necessary to continue after an error, and it also doesn’t give us any nice way to group multiple assertions within a single file, or easily select individual tests to run without re-running the whole suite.
+
+To get those nice features, we’ll have to bring in a test framework. And we have a few choices on that front, but this chapter is going to focus on one test framework in particular.
+
+It’s called Judge, and, full disclosure, I am the author of Judge, so I am definitely biased. But I am the author of Judge *because* automated testing is a weirdly strong passion of mine, and I believe that Judge’s approach to testing is a material improvement over traditional assertion-based testing.
+
+=> https://github.com/ianthehenry/judge Judge
+
+Judge is a framework for writing inline snapshot tests. I’m going to assume that you’ve never heard of inline snapshot testing before, because the technique is not extremely well-known, but lots of test frameworks in lots of languages support it. But it’s often an afterthought, or a bonus feature. In Judge, it is the *only* feature.
+
+=> https://jestjs.io/docs/snapshot-testing#inline-snapshots lots of test frameworks
+=> https://insta.rs/docs/snapshot-types/#inline-snapshots lots of languages
+
+Inline snapshot testing is basically like running a repl directly in your source code. Except it’s a *persistent* repl that you can re-play in the future, or even share with other people.
+
+A simple port of our test into Judge might look like this:
+
+test/math.janet
+
+```
+(use /src/math)
+(use judge)
+
+(test (add 1 2))
+```
+
+Notice that there’s no, umm, assertion there. There’s an expression to test, but it says nothing about what we want it to be. Just like if we typed this at the repl!
+
+When we run the test, Judge will *fill in* the answer — directly in our actual source code.
+
+```
+(use /src/math)
+(use judge)
+
+(test (add 1 2) 3)
+```
+
+And then, the next time we run this test, Judge will only tell us if the output *changes*. If during some delicate refactor we accidentally break the function:
+
+```
+(defn add [a b]
+  (+ a a)) # whoops
+```
+
+Then when we run tests again, Judge will let us know:
+
+```
+judge
+running test: test/math.janet:4:1
+- (test (add 1 2) 3)
++ (test (add 1 2) 2)
+0 passed 1 failed 0 skipped 0 unreachable
+```
+
+Now, this might seem really weird to you at first. It might seem like we’re *assuming* that the code is correct the first time we run it, and that we’re immortalizing whatever random value it happens to give us for the rest of time. But we’re not: there’s a still a human in the loop, and it is a *loop*. If the output isn’t right, we’ll notice, and we’ll fix the bug, and we’ll run it again.
+
+But what if we *don’t* notice? What if we erroneously accept bad output when Judge prompts us, and then don’t notice when we’re staging our commit, and then don’t notice during code review either? Well, then, yes. We’d have a bug. But. I mean. Come on.
+
+Now, I am committing a pedagogical sin here, by showing you examples of tests that no sane human would ever write.
+
+So let’s look at something slightly less trivial:
+
+```
+(test (sorted-by - [10 3 1 28 4]))
+```
+
+`sorted-by` is a built-in Janet function, but let’s pretend that we wrote it and we want to test it. We could, of course, write an assertion about the output. But sorting this list by hand would probably take me a few seconds, and I can check if the output looks right almost instantly:
+
+```
+- (test (sorted-by - [10 3 1 28 4]))
++ (test (sorted-by - [10 3 1 28 4]) @[28 10 4 3 1])
+```
+
+Because it’s so cheap and easy to write tests this way, I find that I write more of them. And because writing tests this way is *easier* and *cheaper* than jumping over to a repl, writing tests is the default way that I engage with my programs.
+
+An important part of the ergonomics here is that Judge tests can exist inside your regular source files. We probably wouldn’t write a test like this in the `test/` subdirectory — we’d probably write it directly in our source:
+
+src/math.janet
+
+```
+(use judge)
+
+(defn add [x y] (+ x y))
+
+(test (add 1 2) 3)
+```
+
+Not only is this more convenient — you don’t have to tab to a different file — but it also makes the code easier to read. The tests act as living, automatically-updating documentation for the behavior of the code.
+
+Is this “test-driven development?” I have no idea. To me it’s just regular development: instead of writing tests before I wrote code, or writing tests after I write code, I write tests as I write code, trying things out in the repl that is my regular source files.
+
+But this is an unusual workflow. I am very accustomed to it from my experience with OCaml, but a more common way to program in languages with lots of parentheses is to start a long-running repl server that you can use to talk to your program interactively. You can do this in Janet, using Spork’s `netrepl` module — but by using source files as your repl, you get persistence over time (because you can run your tests later) and over space (because you can share them with other people) *for free*. Traditional repls are single player affairs, but inline snapshot testing is multiplayer. Plus the kool-aid is delicious.
+
+Alright, that’s enough about testing for now. Let’s move on to debugging.
+
+One way that I like to debug things is an ancient, hallowed technique called “printf debugging.” Printf debugging is great, and don’t let anyone tell you differently.
+
+Judge actually makes printf debugging even nicer, with a macro called `test-stdout`. `test-stdout` runs an expression and shows you what it prints. Like this:
+
+```
+(test-stdout (print "hello") `
+  hello
+`)
+```
+
+On its own, this probably seems really silly. But you can do some wonderful things with it:
+
+```
+(deftest "testing output"
+  (def data [[0 1] [1 3] [2 5]])
+  (test-stdout (print-table ["x" "y"] data) `
+    ╭───┬───╮
+    │ x │ y │
+    ├───┼───┤
+    │ 0 │ 1 │
+    │ 1 │ 3 │
+    │ 2 │ 5 │
+    ╰───┴───╯
+  `))
+```
+
+The way that you visualize test expressions can have a big difference on how effective your tests are. Of course Judge doesn’t care if you print that as a nicely formatted table or not — it’ll just make sure that it stays the same over time — but *people* care. Tests are arguments about the behavior of code, and arguments should be convincing. And it’s a lot easier to make sense of a graph or a chart or an image than it is to wade through a bunch of assertions or raw data.
+
+But *test-stdout* is more powerful than just pretty-printing a string and checking the result. It captures stdout dynamically, so you can use `test-stdout` *with* `printf` debugging to get a better understanding of your code. For example:
+
+```
+(defn slowsort [list]
+  (case (length list)
+    0 list
+    1 list
+    2 (let [[a b] list] [(max a b) (min a b)])
+    (do
+      (def pivot-index (math/floor (/ (length list) 2)))
+      (def pivot (list pivot-index))
+      (def smalls (filter |(< $ pivot) list))
+      (def bigs (filter |(> $ pivot) list))
+      [;(slowsort smalls) pivot ;(slowsort bigs)])))
+```
+
+That’s a not-completely-trivial function. Does it work? Let’s find out.
+
+```
+(use judge)
+
+(test (slowsort [3 10 2 -5]) [-5 2 10 3])
+```
+
+Ah. No. That doesn’t look right.
+
+I know you can already see the problem, but let’s pretend that we are mystified by this, and the only way we can get to the bottom of it is to sprinkle some `printf`s over the code:
+
+```
+(defn slowsort [list]
+  (printf "slowsort %q" list)
+  (case (length list)
+    0 list
+    1 list
+    2 (let [[a b] list] [(max a b) (min a b)])
+    (do
+      (def pivot-index (math/floor (/ (length list) 2)))
+      (def pivot (list pivot-index))
+      (def smalls (filter |(< $ pivot) list))
+      (def bigs (filter |(> $ pivot) list))
+      (printf "  %q %q %q" smalls pivot bigs)
+      [;(slowsort smalls) pivot ;(slowsort bigs)])))
+```
+
+And then change our `test` expression to `test-stdout`:
+
+```
+(test-stdout (slowsort [3 10 2 -5]) `
+  slowsort (3 10 2 -5)
+    @[-5] 2 @[3 10]
+  slowsort @[-5]
+  slowsort @[3 10]
+` [-5 2 10 3])
+```
+
+Aha! We realize from looking at the execution trace that we flipped the output in the two-element case. We fix our test, and move on.
+
+Hopefully to write more tests, because that was definitely not the only bug in that code.
+
+Of course we don’t have to use Judge to do any of this — we could just run it by hand and look at the output. That’s a completely reasonable thing to do, but by running code with Judge we get to co-locate the expressions and the output they produce, which is easier for my brain to reckon with. We can also keep all of our existing editor tooling for running the test under the cursor or running all the tests in the current file, instead of having to modify our `(main)` entry point somehow.
+
+I think that that editor tooling is pretty important if you want Judge to replace the repl for you altogether, but unfortunately Judge does not have very good support in major editors. But it is one of the simpler integrations to write for your favorite editor: just run `judge file.janet:line:col`, passing it the position of your cursor, and Judge will take it from there.
+
+Okay, so I guess we didn’t really switch gears before. We’re still talking about testing, aren’t we. But let’s *actually* move on to debugging now. Even though they are intimately related, and often the easiest way to debug something is to write more tests for it, and—
+
+Okay fine. There is more to life than writing automated tests.
+
+So Janet actually includes an interactive step-through debugger. You can bring up at any point, and you can have Janet automatically bring it up on uncaught errors. Let’s take a look:
+
+debug.janet
+
+```
+(defn inc [x]
+  (+ x 1))
+
+(defn main [&]
+  (print (inc "foo")))
+```
+
+If we just run that, we’ll get an error:
+
+```
+janet debug.janet
+error: could not find method :+ for "foo"
+  in inc [debug.janet] on line 2, column 3
+  in main [debug.janet] (tailcall) on line 5, column 10
+  in run-main [boot.janet] on line 3795, column 16
+  in cli-main [boot.janet] on line 3940, column 17
+```
+
+And, you know, this happens to be a pretty clear error message. But let’s pretend, for example’s sake, that we are *mystified*, and cannot understand what has gone wrong.
+
+Enter the Janet debugger:
+
+```
+janet -d debug.janet
+error: could not find method :+ for "foo"
+  in inc [debug.janet] on line 2, column 3
+  in main [debug.janet] (tailcall) on line 5, column 10
+entering debug[1] - (quit) to exit
+debug[1]:1:>
+```
+
+Now we’re in a prompt like a repl that we can use to poke around. First off, let’s try to figure out where we are.
+
+```
+debug[1]:1:> (.stack)
+
+error: could not find method :+ for "foo"
+  in inc [debug.janet] on line 2, column 3
+  in main [debug.janet] (tailcall) on line 5, column 10
+
+nil
+```
+
+Hmm, okay. That tells us where the error started, although we sort of remembered that from the original message. But what was at `debug.janet:2:3` again? It would be nice to see the actual expression that raised.
+
+```
+debug[1]:2:> (.source)
+
+(defn inc [x]
+  (+ x 1))
+
+(defn main [&]
+  (print (inc "foo")))
+
+nil
+```
+
+Unfortunately Janet’s debugger doesn’t have a way to combine the stack frames with the actual source. It would be nice to highlight the current stack frame in context. But okay — the information is there.
+
+So it *seems* like maybe the problem has to do with this `x`. What is `x`?
+
+```
+debug[1]:3:> x
+<anonymous>:3:1: compile error: unknown symbol x
+```
+
+Ah, hmm. This might be surprising, but the debugger repl is not actually running in the context of the place where we’re currently paused. Instead, to inspect the local environment, we have to use:
+
+```
+debug[1]:4:> (.locals)
+@{inc <function inc> x "foo"}
+```
+
+Which gives us a table of all the local bindings.
+
+`(.locals)` is short for `(.locals 0)`. You can also call `(.locals 1)` to get the locals in the stack frame below this one.
+
+That’s *about* the extent of your debugging abilities, if you’re stopped on an error like this.
+
+However there are other ways to conjure the debugger. Let’s consider a slightly more complicated program:
+
+step.janet
+
+```
+(defn enemy-of-enemy [name people]
+  (def subject (people name))
+  (def nemesis (people (subject :nemesis)))
+  (people (nemesis :nemesis)))
+
+(defn main [&]
+  (def people {"ian" {:age "young at heart"
+                      :nemesis "jeffrey"}
+               "jeffrey" {:age 7.5
+                          :nemesis "sarah"}})
+  (print (enemy-of-enemy "ian" people)))
+```
+
+Let’s try running it:
+
+```
+janet step.janet
+```
+
+Ah. Just… a blank line. Huh. That’s mysterious. There’s no error, but still… it would be nice if we could poke around inside the runtime environment of our program to see what we did wrong.
+
+Which we can do by adding a call to `(debug)`:
+
+```
+(defn enemy-of-enemy [name people]
+  (debug)
+  (def subject (people name))
+  (def nemesis (people (subject :nemesis)))
+  (people (nemesis :nemesis)))
+
+janet step.janet
+debug:
+  in enemy-of-enemy [step.janet] on line 2, column 3
+  in main [step.janet] (tailcall) on line 12, column 10
+  in run-main [boot.janet] on line 3795, column 16
+  in cli-main [boot.janet] on line 3940, column 17
+```
+
+Ah, umm, whoops. By default the `(debug)` function just raises a signal, and there’s nothing handling that signal unless we start our program with `janet -d`:
+
+```
+janet -d step.janet
+debug:
+  in enemy-of-enemy [step.janet] on line 2, column 3
+  in main [step.janet] (tailcall) on line 12, column 10
+entering debug[1] - (quit) to exit
+debug[1]:1:>
+```
+
+That’s better. Now let’s see what went wrong:
+
+```
+debug[1]:1:> (.locals)
+@{enemy-of-enemy <function enemy-of-enemy> name "ian" people {"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}}}
+```
+
+Well, yes, the function just started. Let’s see if maybe the `subject` lookup failed, by stepping over the next instruction:
+
+```
+debug[1]:2:> (.step)
+nil
+debug[1]:3:> ((.locals) 'subject)
+nil
+```
+
+Ah. Well. You might conclude that the `subject` lookup didn’t work, but actually…
+
+Actually we did not step over the line `(def subject (people name))`. We actually stepped through a single *virtual machine instruction*.
+
+We haven’t talked much about this yet, but we aren’t actually interpreting *Janet* code at runtime. We’re actually interpreting a precompiled bytecode.
+
+We can look at the code we’re “actually” running with `.ppasm`:
+
+```
+debug[1]:4:> (.ppasm)
+
+  signal:
+  status:     debug
+  function:   enemy-of-enemy [step.janet]
+  constants:  @[:nemesis]
+  slots:      @["ian" {"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}} <function enemy-of-enemy> nil nil nil nil nil nil]
+
+   lds 2                # line 1, column 1
+   ldn 4                # line 2, column 3
+   sig 3 4 2
+ > push 0               # line 3, column 16
+   call 4 1
+   movn 5 4             # line 3, column 3
+   ldc 6 0              # line 4, column 24
+   push 6
+   call 6 5
+   push 6               # line 4, column 16
+   call 7 1
+   movn 6 7             # line 4, column 3
+   ldc 8 0              # line 5, column 11
+   push 8
+   call 8 6
+   push 8               # line 5, column 3
+   tcall 1
+
+nil
+```
+
+And that shows us where we *actually* are. We’re about to execute line 3, column 16 — that would be the `(people name)` expression.
+
+How do these instructions correspond to `(people name)`? Well, `push 0` pushes the `name` argument onto the stack, and `call 4 1` invokes the `people` “function” with the current arguments on the stack, storing the result in “slot 4”.
+
+How did I know that? Well, a big part of it is looking at the “slots” argument as a way to translate all those numbers into values:
+
+```
+["ian" {"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}} <function enemy-of-enemy> nil nil nil nil nil nil]
+```
+
+From this we can guess that slot `0` is the local variable `name` and slot `1` is the local variable `people`. Slot `2` is a reference to the function itself (to allow recursion), and the rest of the slots are currently `nil` — they haven’t been filled in yet.
+
+So we can rewrite this virtual machine code into something slightly more readable:
+
+```
+push name                # line 3, column 16
+slots[4] = call people
+slots[5] = slots[4]      # line 3, column 3
+```
+
+From this we can guess that slot 4 is a scratch space for the result of the `(people name)` call, and slot 5 corresponds to the `subject` local variable.
+
+Let’s step a few more times until we’ve run those instructions:
+
+```
+debug[1]:5:> (.step)
+nil
+debug[1]:6:> (.step)
+nil
+debug[1]:7:> (.step)
+nil
+debug[1]:8:> (.ppasm)
+
+  signal:
+  status:     debug
+  function:   enemy-of-enemy [step.janet]
+  constants:  @[:nemesis]
+  slots:      @["ian" {"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}} <function enemy-of-enemy> nil {:age "young at heart" :nemesis "jeffrey"} {:age "young at heart" :nemesis "jeffrey"} nil nil nil]
+
+   lds 2                # line 1, column 1
+   ldn 4                # line 2, column 3
+   sig 3 4 2
+   push 0               # line 3, column 16
+   call 4 1
+   movn 5 4             # line 3, column 3
+ > ldc 6 0              # line 4, column 24
+   push 6
+   call 6 5
+   push 6               # line 4, column 16
+   call 7 1
+   movn 6 7             # line 4, column 3
+   ldc 8 0              # line 5, column 11
+   push 8
+   call 8 6
+   push 8               # line 5, column 3
+   tcall 1
+
+nil
+```
+
+Great. We just ran the `movn` instruction. And now?
+
+```
+debug[1]:9:> ((.locals) 'subject)
+{:age "young at heart" :nemesis "jeffrey"}
+```
+
+Great! Looks like it worked.
+
+Stepping one instruction at a time isn’t exactly the best way to debug, though. And we *can* step multiple instructions at a time, by using `(.step count)`. But I don’t really want to count instructions.
+
+Fortunately, the `.ppasm` output has line and column numbers, and we can use those to set breakpoints:
+
+```
+debug[1]:10:> (debug/break "step.janet" 5 11)
+nil
+```
+
+And then we can continue until the next breakpoint:
+
+```
+debug[1]:11:> (.next)
+nil
+debug[1]:12:> (.ppasm)
+
+  signal:
+  status:     debug
+  function:   enemy-of-enemy [step.janet]
+  constants:  @[:nemesis]
+  slots:      @["ian" {"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}} <function enemy-of-enemy> nil {:age "young at heart" :nemesis "jeffrey"} {:age "young at heart" :nemesis "jeffrey"} {:age 7.5 :nemesis "sarah"} {:age 7.5 :nemesis "sarah"} nil]
+
+   lds 2                # line 1, column 1
+   ldn 4                # line 2, column 3
+   sig 3 4 2
+   push 0               # line 3, column 16
+   call 4 1
+   movn 5 4             # line 3, column 3
+   ldc 6 0              # line 4, column 24
+   push 6
+   call 6 5
+   push 6               # line 4, column 16
+   call 7 1
+   movn 6 7             # line 4, column 3
+*> ldc 8 0              # line 5, column 11
+   push 8
+   call 8 6
+   push 8               # line 5, column 3
+   tcall 1
+
+nil
+```
+
+Great! (The asterisk is telling us that we still have a breakpoint set there.)
+
+So if you remember our original program, we just ran the line `def nemesis`:
+
+```
+(defn enemy-of-enemy [name people]
+  (debug)
+  (def subject (people name))
+  (def nemesis (people (subject :nemesis)))
+  # we are here
+  (people (nemesis :nemesis)))
+```
+
+And now we’re going to do one more lookup in the `people` struct and return the result. At this point we have all the information we need to figure out why this doesn’t work:
+
+```
+debug[1]:13:> (def nemesis ((.locals) 'nemesis))
+{:age 7.5 :nemesis "sarah"}
+debug[1]:14:> (def people ((.locals) 'people))
+{"ian" {:age "young at heart" :nemesis "jeffrey"} "jeffrey" {:age 7.5 :nemesis "sarah"}}
+debug[1]:15:> (nemesis :nemesis)
+"sarah"
+debug[1]:16:> (people "sarah")
+nil
+```
+
+Aha. That would do it, wouldn’t it?
+
+Now, deciphering Janet bytecode was, umm, clearly overkill for such a trivial bug. But this runtime step-through debugging can be quite useful in hairier situations. It’s not the most *ergonomic* experience, though, so it’s probably not something that you should reach for unless you’re pretty well stumped already.
+
+I don’t use the debugger much, personally. Janet’s interactive debugger is mostly useful for *deep* bugs — bugs that are hard to reproduce in test cases, that only show up after accumulating a bit of runtime state, or that only arise non-deterministically. Deep bugs are unavoidable, but I like to structure my programs to be as shallow as possible, so that I can shake out as many bugs as I can with automated tests.
+
+There are some more commands available in the debugger that we haven’t talked about. You can see them all with autocomplete:
+
+```
+debug[1]:1:> .<TAB>
+.break
+.breakall
+.bytecode
+.clear
+.clearall
+.disasm
+.fiber
+.fn
+.frame
+.locals
+.next
+.nextc
+.ppasm
+.signal
+.slot
+.slots
+.source
+.stack
+.step
+```
+
+And you can read about them with `doc`:
+
+```
+debug[1]:2:> (doc .bytecode)
+
+
+    function
+    boot.janet on line 3411, column 3
+
+    (.bytecode &opt n)
+
+    Get the bytecode for the current function.
+
+
+nil
+```
+
+But I think that `.locals`, `.ppasm`, and `debug/break` are the most useful ones to know about.
+
+There’s one more thing I’ll mention before we leave here.
+
+By default, you can’t use `janet -d` to break on *top-level* errors. This means that you can’t use the interactive debugger for errors that you encounter during the compilation phase — including errors inside macro definitions.
+
+raise.janet
+
+```
+(error "oh no")
+
+janet -d raise.janet
+error: oh no
+  in _thunk [raise.janet] (tailcall) on line 1, column 1
+```
+
+To catch top-level errors like this, you *also* have to pass `-p`:
+
+```
+janet -p -d raise.janet
+error: oh no
+  in _thunk [raise.janet] (tailcall) on line 1, column 1
+entering debug[1] - (quit) to exit
+debug[1]:1:>
+```
+
+This can be pretty helpful when you’re debugging macros so tricky that your tests don’t even compile.
+
+=> chapter-12.gmi Chapter Twelve: Scripting →
+
+If you're enjoying this book, tell your friends about it! A single toot can go a long way.
