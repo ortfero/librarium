@@ -1,5 +1,6 @@
 # Cukta te kabri
 
+=> en/computers/languages/henry--janet_for_mortals/chapter-05.gmi 2024-07-24 Janet for Mortals. Chapter Fibe: Concurrency and Coroutines
 => en/computers/languages/henry--janet_for_mortals/chapter-04.gmi 2024-07-23 Janet for Mortals. Chapter Four: Pegular Expressions
 => en/computers/languages/henry--janet_for_mortals/chapter-03.gmi 2024-07-22 Janet for Mortals. Chapter Three: Macros and Metaprogramming
 => en/computers/languages/henry--janet_for_mortals/chapter-02.gmi 2024-07-21 Janet for Mortals. Chapter Two: Compilation and Imagination
