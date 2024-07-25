@@ -1,3 +1,3 @@
 # Computers / Languages
 
-=> henry--janet_for_mortals Henri Ian. Janet for mortals
+=> henry--janet_for_mortals/index.gmi Henri Ian. Janet for mortals
