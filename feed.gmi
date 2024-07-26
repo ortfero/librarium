@@ -1,5 +1,6 @@
 # Cukta te kabri
 
+=> en/computers/languages/henry--janet_for_mortals/chapter-07.gmi 2024-07-26 Janet for Mortals. Chapter Seven. Modules and Packages
 => en/computers/languages/henry--janet_for_mortals/chapter-06.gmi 2024-07-25 Janet for Mortals. Chapter Six: Control Flow
 => en/computers/languages/henry--janet_for_mortals/chapter-05.gmi 2024-07-24 Janet for Mortals. Chapter Fibe: Concurrency and Coroutines
 => en/computers/languages/henry--janet_for_mortals/chapter-04.gmi 2024-07-23 Janet for Mortals. Chapter Four: Pegular Expressions
