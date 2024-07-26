@@ -3,7 +3,7 @@ Ian Henry
 2023
 
 ~~~
-This book was converted from the html version to gemtext in July 2024 by Andrei Il'in with the kind permission of Ian Henry. Feel free to contact me by ortfero at gmail dot com.
+This book was converted from the html version to gemtext in July 2024 by Andrei Il'in with the kind permission of Ian Henry. Feel free to contact me by ortfero [at] gmail [dot] com.
 
 => https://janet.guide html version
 => https://ianthehenry.com Ian Henry
