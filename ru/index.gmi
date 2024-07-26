@@ -1,3 +1,4 @@
 # Книги на русском
 
 => detskaia/index.gmi Детская литература
+=> fantastika/index.gmi Фантастика

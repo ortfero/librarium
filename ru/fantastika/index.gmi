@@ -1,0 +1,4 @@
+# Фантастика
+
+=> mir_poludnia/index.gmi
+
