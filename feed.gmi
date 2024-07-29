@@ -1,5 +1,6 @@
 # Cukta te kabri
 
+=> en/computers/languages/henry--janet_for_mortals/chapter-09/gmi 2024-07-29 Janet for Mortals. Chapter Ten: Embedding Janet
 => en/computers/languages/henry--janet_for_mortals/chapter-08.gmi 2024-07-28 Janet for Mortals. Chapter Nine: Xenofunctions
 => en/computers/languages/henry--janet_for_mortals/chapter-08.gmi 2024-07-27 Janet for Mortals. Chapter Eight: Tables and Polymorphism
 => en/computers/languages/henry--janet_for_mortals/chapter-07.gmi 2024-07-26 Janet for Mortals. Chapter Seven: Modules and Packages
