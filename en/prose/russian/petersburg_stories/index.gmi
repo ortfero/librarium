@@ -1,0 +1,4 @@
+# Prose / Russian / Petersburg Stories
+
+=> gogol--the_cloak/index.gmi Gogol Nikolai. The Cloak
+=> gogol--the_mysterious_portrait/index.gmi Gogol Nikolai. The Mysterious Portrait
