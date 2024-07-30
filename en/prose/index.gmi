@@ -1,3 +1,3 @@
-# Literature
+# Prose
 
 => russian/index.gmi Russian

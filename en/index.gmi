@@ -1,5 +1,5 @@
 # Books in English
 
 => computers/index.gmi Computers
-=> literature/index.gmi Literature
+=> prose/index.gmi Prose
 => science_fiction/index.gmi Science Fiction

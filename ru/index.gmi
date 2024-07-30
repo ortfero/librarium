@@ -1,5 +1,5 @@
 # Книги на русском
 
 => detskaia/index.gmi Детская литература
-=> literatura/index.gmi Литература
+=> proza/index.gmi Проза
 => fantastika/index.gmi Фантастика
