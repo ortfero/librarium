@@ -1,4 +1,4 @@
 # Проза / Русская
 
-=> gogol--portret/index.gmi Гоголь Николай. Портрет
-=> gogol--shinel/index.gmi Гоголь Николай. Шинель
+=> peterburgskie_povesti/index.gmi Петербургские повести
+

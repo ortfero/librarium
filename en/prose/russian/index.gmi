@@ -1,4 +1,4 @@
 # Prose / Russian
 
-=> gogol--the_mantle/index.gmi Gogol Nikolai. The Mantle
-=> gogol--the_mysterious_portrait/index.gmi Gogol Nikolai. The Mysterious Portrait
+=> petersburg_stories/index.gmi Petersburg Stories
+

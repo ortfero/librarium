@@ -1,0 +1,5 @@
+# Проза / Русская / Петербургские повести
+
+=> gogol--nevskii_prospekt/index.gmi Гоголь Николай. Невский проспект
+=> gogol--portret/index.gmi Гоголь Николай. Портрет
+=> gogol--shinel/index.gmi Гоголь Николай. Шинель
