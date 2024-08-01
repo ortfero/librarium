@@ -1,5 +1,7 @@
 # Cukta te kabri
 
+=> en/computers/languages/henry--janet_for_mortals/chapter-11.gmi 2024-07-31 Janet for Mortals. Chapter Thirteen: Macro Mischief
+=> en/computers/languages/henry--janet_for_mortals/chapter-11.gmi 2024-07-31 Janet for Mortals. Chapter Twelve: Scripting
 => en/computers/languages/henry--janet_for_mortals/chapter-11.gmi 2024-07-30 Janet for Mortals. Chapter Eleven: Testing and Debugging
 => en/computers/languages/henry--janet_for_mortals/chapter-10.gmi 2024-07-29 Janet for Mortals. Chapter Ten: Embedding Janet
 => en/computers/languages/henry--janet_for_mortals/chapter-09.gmi 2024-07-28 Janet for Mortals. Chapter Nine: Xenofunctions
