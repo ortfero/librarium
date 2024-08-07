@@ -1,6 +1,7 @@
 # Cukta te kabri
 
 => djvu/index.gmi djvu
+=> pdf/index.gmi PDF
 
 => en/index.gmi Books in English
 => ru/index.gmi Книги на русском

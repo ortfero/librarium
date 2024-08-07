@@ -1,0 +1,5 @@
+# PDF / Книги на русском
+
+=> nauchpop/index.gmi Научпоп
+=> razvitie/index.gmi Развитие
+=> uchebniki/index.gmi Учебники

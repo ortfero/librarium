@@ -1,0 +1,35 @@
+# PDF / Учебники
+
+=> arkhangelskaia--bukvar.pdf Архангельская Наталья. Букварь
+
+
+## Математика
+
+=> pchelko--metodika_prepodavaniia_arifmetiki.pdf Пчелко Александр. Методика преподавания арифметики в начальной школе
+=> pchelko--arifmetika_dlia_1_klassa.pdf Пчелко Александр. Арифметика для 1 класса
+=> pchelko--arifmetika_dlia_2_klassa.pdf Пчелко Александр. Арифметика для 2 класса
+=> pchelko--arifmetika_dlia_3_klassa.pdf Пчелко Александр. Арифметика для 3 класса
+=> pchelko--arifmetika_dlia_4_klassa.pdf Пчелко Александр. Арифметика для 4 класса
+=> nikolskii--matematika_5_klass.pdf Никольский Сергей. Математика. 5 класс
+=> nikolskii--matematika_6_klass.pdf Никольский Сергей. Математика. 6 класс
+=> nikolskii--algebra_7_klass.pdf Никольский Сергей. Алгебра. 7 класс
+=> verner--metodika_geometriia_7_klass.pdf Вернер Алексей. Геометрия. Методические рекомендации. 7 класс
+=> aleksandrov--geometriia_7_klass.pdf Александров Александр. Геометрия. 7 класс
+=> nikolskii--algebra_8_klass.pdf Никольский Сергей. Алгебра. 8 класс
+=> verner--metodika_geometriia_8_klass.pdf Вернер Алексей. Геометрия. Методические рекомендации. 8 класс
+=> aleksandrov--geometriia_8_klass.pdf Александров Александр. Геометрия. 8 класс
+=> nikolskii--algebra_9_klass.pdf Никольский Сергей. Алгебра. 9 класс
+=> verner--metodika_geometriia_9_klass.pdf Вернер Алексей. Геометрия. Методические рекомендации. 9 класс
+=> aleksandrov--geometriia_9_klass.pdf Александров Александр. Геометрия. 9 класс
+=> nikolskii--algebra_10_klass.pdf Никольский Сергей. Алгебра. 10 класс
+=> nikolskii--algebra_11_klass.pdf Никольский Сергей. Алгебра. 11 класс
+=> papovskii--metodika_geometriia_10_klass.pdf Паповский Владимир. Углубленное изучение геометрии в 10 классе
+=> aksenov--metodika_geometriia_11_klass.pdf Аксенов Константин. Углубленное изучение геометрии в 11 классе
+=> aleksandrov--geometriia_10_11_klass.pdf Александров Александр. Геометрия. 10-11 классы
+
+
+## Физика
+
+=> landsberg--elementarnii_uchebnik_fiziki-1.pdf Ландсберг Григорий. Элементарный учебник физики. Том 1
+=> landsberg--elementarnii_uchebnik_fiziki-2.pdf Ландсберг Григорий. Элементарный учебник физики. Том 2
+=> landsberg--elementarnii_uchebnik_fiziki-3.pdf Ландсберг Григорий. Элементарный учебник физики. Том 3

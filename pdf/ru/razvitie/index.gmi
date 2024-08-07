@@ -1,0 +1,29 @@
+# PDF / Развитие
+
+=> agafonov--skazki_strany_matematiki.pdf Агафонов Василий, Соболева Ольга. Сказки страны математики
+=> agafonov--volshebnyi_prazdnik_chisla.pdf Агафонов Василий, Соболева Ольга. Волшебный праздник числа
+=> beloshistaia--ia_schitaiu_i_reshaiu.pdf Белошистая Анна. Я считаю и решаю!
+=> gar--tozhe_matematika.pdf Гар Михаил. Тоже математика
+=> gardner--matematicheskie_chudesa_i_tainy.pdf Гарднер Мартин. Математические чудеса и тайны
+=> gardner--matematicheskie_novelly.pdf Гарднер Мартин. Математические новеллы
+=> gendenshtein--alisa_v_strane_matematiki.pdf Генденштейн Лев. Алиса в стране математики
+=> genkin--leningradskie_matematicheskie_kruzhki.pdf Генкин Сергей, Итенберг Илья, Фомин Дмитрий. Ленинградские математические кружки
+=> gol--poreshaika.pdf Голь Николай, Кноп Константин. Порешай-ка
+=> knop--azy_teorii_chisel.pdf Кноп Константин. Азы теории чисел
+=> knop--vzveshivaniia_i_algoritmy.pdf Кноп Константин. Взвешивания и алгоритмы: от головоломок к задачам
+=> kordemskii--udivitelnyi_mir_chisel.pdf Кордемский Борис, Ахадов Аскер. Удивительный мир чисел
+=> korobicyn--matematicheskii_kruzhok_5_klass.pdf Коробицын Дмитрий, Жуков Георгий. Математический кружок (5 класс)
+=> kozlova--skazki_i_podskazki.pdf Козлова Елена. Сказки и подсказки 
+=> levinova--kubarik_i_tomatik.pdf Левинова Людмила, Сапгир Генрих. Кубарик и Томатик
+=> levinova--prikliucheniia_kubarika_i_tomatika.pdf Левинова Людмила, Сапгир Генрих. Приключения Кубарика и Томатика
+=> oster--fizika.pdf Остер Григорий. Физика
+=> oster--zadachnik_po_matematike.pdf Остер Григорий. Задачник по математике
+=> perelman--zanimatelnaia_matematika.pdf Перельман Яков. Занимательная математика
+=> poia--kak_reshat_zadachu.pdf Пойа Дьёрдь. Как решать задачу
+=> poia--matematicheskoe_otkrytie.pdf Пойа Дьёрдь. Математическое открытие
+=> poia--matematika_i_pravdopodobnye_rassuzhdeniia.pdf Пойа Дьёрдь. Математика и правдоподобные рассуждения
+=> smallian--kak_zhe_nazyvaetsia_eta_kniga.pdf Смаллиан Рэймонд. Как же называется эта книга?
+=> spivak--matematicheskii_kruzhok_7_klass.pdf Спивак Александр. Математический кружок. 7 класс
+=> vilenknin--kombinatorika.pdf Виленкин Наум, Виленкин Александр, Виленкин Павел. Комбинаторика
+=> zhitomirskii--puteshestvie_po_strane_geometrii.pdf Житомирский Владимир, Шеврин Лев. Путешествие по стране геометрии
+ 

@@ -1,0 +1,12 @@
+# PDF / Научпоп
+
+=> andreev--matematicheskaia_sostavliaiushchaia.pdf Андреев Николай. Математическая составляющая
+=> arnold--matematicheskoe_ponimanie_prirody.pdf Арнольд Владимир. Математическое понимание природы
+=> dixit--teoriia_igr.pdf Диксит Авинаш, Нейлбафф Барри. Теория Игр
+=> gardner--teoriia_otnositelnosti_dlia_millionov.pdf Гарднер Мартин. Теория относительности для миллионов
+=> kurant--chto_takoe_matematika.pdf Курант Ричард, Роббинс Герберт. Что такое математика
+=> litvak--komu_nuzhna_matematika.pdf Литвак Нелли. Кому нужна математика
+=> savvateev--matematika_dlia_gumanitariev.pdf Савватеев Алексей. Математика для гуманитариев
+=> semikhatov--vse_chto_dvizhetsia.pdf Семихатов Алексей. Все, что движется
+=> strogats--udovolstvie_ot_iks.pdf Строгац Стивен. Удовольствие от x
+=> wheelan--golaia_statistika.pdf Уилан Чарльз. Голая статистика
